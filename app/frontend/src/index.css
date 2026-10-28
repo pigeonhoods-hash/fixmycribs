@@ -1,0 +1,147 @@
+@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,700,500&f[]=general-sans@600,500,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    font-family: 'General Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: #F8F9FA;
+    color: #111827;
+}
+
+h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: 'Cabinet Grotesk', 'General Sans', sans-serif;
+    letter-spacing: -0.02em;
+}
+
+.tiny-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-weight: 700;
+    color: #6B7280;
+}
+
+@layer base {
+    :root {
+        --background: 0 0% 97.6%;
+        --foreground: 220 13% 12%;
+        --card: 0 0% 100%;
+        --card-foreground: 220 13% 12%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 220 13% 12%;
+        --primary: 142 76% 36%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 220 14% 96%;
+        --secondary-foreground: 220 13% 12%;
+        --muted: 220 14% 96%;
+        --muted-foreground: 220 9% 46%;
+        --accent: 20 91% 48%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 74% 42%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 220 13% 91%;
+        --input: 220 13% 91%;
+        --ring: 142 76% 36%;
+        --chart-1: 142 71% 45%;
+        --chart-2: 20 91% 48%;
+        --chart-3: 0 74% 42%;
+        --chart-4: 38 92% 50%;
+        --chart-5: 210 80% 50%;
+        --radius: 0.5rem;
+    }
+    .dark {
+        --background: 222 47% 6%;
+        --foreground: 210 40% 96%;
+        --card: 222 40% 9%;
+        --card-foreground: 210 40% 96%;
+        --popover: 222 44% 8%;
+        --popover-foreground: 210 40% 96%;
+        --primary: 142 71% 45%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 217 33% 15%;
+        --secondary-foreground: 210 40% 96%;
+        --muted: 217 33% 15%;
+        --muted-foreground: 215 20% 65%;
+        --accent: 20 91% 52%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 74% 50%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 217 33% 18%;
+        --input: 217 33% 18%;
+        --ring: 142 71% 45%;
+    }
+}
+
+/* ============ DARK MODE — global surface remap ============
+   The app uses literal slate/white utilities; these overrides retheme
+   everything at once. `.dark .x` (specificity 0,2,0) beats `.x` (0,1,0). */
+.dark body { background-color: #070c17; color: #e5edf7; }
+
+.dark .bg-white,
+.dark .bg-\[\#F8F9FA\],
+.dark .md\:bg-transparent { background-color: #0d1424 !important; }
+.dark .bg-white\/80,
+.dark .bg-white\/90 { background-color: rgba(13,20,36,0.85) !important; }
+.dark .bg-slate-50 { background-color: #0f172a; }
+.dark .bg-slate-100 { background-color: #1a2436; }
+.dark .bg-slate-200 { background-color: #243049; }
+.dark .hover\:bg-slate-50:hover { background-color: #16203a; }
+.dark .hover\:bg-slate-100:hover { background-color: #1c2740; }
+.dark .divide-slate-100 > * + *, .dark .divide-slate-200 > * + * { border-color: #1e293b; }
+
+/* text */
+.dark .text-slate-900, .dark .text-black, .dark .text-slate-800 { color: #eef4fb; }
+.dark .text-slate-700 { color: #cdd8e6; }
+.dark .text-slate-600 { color: #a9b6c8; }
+.dark .text-slate-500, .dark .tiny-label { color: #8090a6; }
+.dark .text-slate-400 { color: #6b7a90; }
+
+/* borders */
+.dark .border-slate-200, .dark .border-slate-100, .dark .border { border-color: #1e293b; }
+.dark .border-slate-300 { border-color: #2a3852; }
+.dark .border-dashed { border-color: #2a3852; }
+
+/* soft tint badges → subtle translucent on dark */
+.dark .bg-slate-50.border,
+.dark .bg-emerald-50 { background-color: rgba(16,185,129,0.12); }
+.dark .bg-amber-50 { background-color: rgba(245,158,11,0.12); }
+.dark .bg-red-50 { background-color: rgba(239,68,68,0.12); }
+.dark .bg-blue-50 { background-color: rgba(59,130,246,0.12); }
+.dark .bg-orange-50 { background-color: rgba(249,115,22,0.12); }
+
+/* inputs & selects */
+.dark input, .dark textarea, .dark select { color: #e5edf7; }
+.dark input::placeholder, .dark textarea::placeholder { color: #64748b; }
+
+.dark ::-webkit-scrollbar-thumb { background: #334155; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* smooth transition when toggling */
+html.theme-anim, html.theme-anim * { transition: background-color .35s ease, border-color .35s ease, color .35s ease; }
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #D1D5DB; }

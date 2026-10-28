@@ -1,0 +1,47 @@
+{
+  "summary": "Full backend + frontend testing of the new auth (password policy, email verification, brute-force lockout, password reset) and subscription feature-gating (Starter locked; Growth unlocked). 26/26 backend pytest cases pass. Frontend register->verify-email flow, PasswordChecklist, sidebar lock indicators, and FeatureGate on direct navigation all work as specified. Admin/Starter/Growth logins all work.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Locked nav click behavior",
+        "issue": "Clicking a locked sidebar item (nav-locked-utility-bills / nav-locked-maintenance / nav-locked-reports) navigates to /dashboard/billing (upgrade/plan page) rather than to the FeatureGate page at /dashboard/{feature}. This is a reasonable UX choice (jumps straight to upgrade), but review_request wording suggested clicking should show the FeatureGate screen. Direct navigation to /dashboard/bills, /dashboard/maintenance, /dashboard/reports, /dashboard/facility-managers correctly renders the corresponding feature-gate-* component.",
+        "affected_selectors": ["nav-locked-utility-bills", "nav-locked-maintenance", "nav-locked-reports"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Dashboard (both plans)",
+        "issues": ["Recharts warnings: The width(-1) and height(-1) of chart should be greater than 0 — chart container has 0 initial size (cosmetic console noise, chart still renders after resize)."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_and_gating.py",
+    "/app/test_reports/pytest/auth_gating.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Decide desired UX for locked nav click — if it should show FeatureGate page instead of Billing, change SidebarGroup locked-item handler to navigate to the feature path rather than /dashboard/billing.",
+    "OPTIONAL: Add min-height/min-width to Recharts ResponsiveContainer wrapper to silence width/height(-1) warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py is very large (4483 lines). Split into modules (auth, subscriptions, bills, maintenance, admin, tenants) for maintainability.",
+    "APP_ENV gates dev_verification_link/dev_link — good; ensure APP_ENV=production in prod deploys so tokens aren't leaked.",
+    "brute-force lockout resets `count` to 0 when locking; consecutive lockouts after unlock again require 5 more failures. Acceptable, but consider exponential backoff.",
+    "forgot-password always returns 200 for enumeration safety — good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_and_gating.py"
+  ],
+  "success_rate": {"backend": "100% (26/26)", "frontend": "~95% (all critical flows pass; one UX nit on locked-nav click destination)"},
+  "test_credentials": "Admin: admin@fixmycribs.com / Admin@FixMyCribs2026; Starter: owner1@test.com / Strong@123; Growth: growth@test.com / Growth@123",
+  "seed_data_creation": "Test file creates throwaway users (weak_*, strong_*, verify_*, resend_*, reset_*, fe_*, brute_*) via /auth/register. Not cleaned up but harmless.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest at /app/backend/tests/test_auth_and_gating.py covers: password policy, email verification, resend, forgot/reset password, admin/starter/growth login, subscription gating (Starter 403 on reports/maintenance/facility-managers/bills; Growth passes), core regression, brute-force lockout (uses throwaway email, DOES NOT lock shared accounts). Sidebar lock nav items require opening the menu (menu-toggle) since sidebar is not always visible; nav-locked-utility-bills is inside the Financials group and needs the group expanded via nav-group-financials click.",
+  "rca of the issue": "N/A — no bugs found. The only observation is UX: locked-nav item click routes to /dashboard/billing (upgrade page) rather than to the FeatureGate at the feature's route. This is likely intentional in SidebarGroup for locked items."
+}
