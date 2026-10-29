@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse, Response
 from dotenv import load_dotenv
@@ -386,6 +386,28 @@ def _smtp_send_sync(to: str, subject: str, plain: str, html: str, from_email: st
         logger.info(f"[email->sent] to={to} subject={subject!r} from={from_email}")
     except Exception as e:
         logger.error(f"[email->FAILED] to={to} subject={subject!r} error={e}")
+        raise
+
+
+def _resend_send_sync(to: str, subject: str, plain: str, html: str, from_email: str, from_name: str):
+    """Send transactional email via HTTPS (works on Railway Hobby)."""
+    import requests
+    key = os.environ["RESEND_API_KEY"]
+    response = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={"from": f"{from_name} <{from_email}>", "to": [to],
+              "subject": subject, "text": plain, "html": html}, timeout=25,
+    )
+    response.raise_for_status()
+    logger.info("[email->accepted] via=resend to=%s", to)
+    return response.json().get("id")
+
+
+def _transactional_email_ready() -> bool:
+    return bool(os.environ.get("RESEND_API_KEY") and os.environ.get("EMAIL_FROM")) or bool(
+        os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USERNAME") and os.environ.get("SMTP_PASSWORD")
+    )
 
 
 def send_email_dev(to: str, subject: str, body: str, link: Optional[str] = None,
@@ -393,17 +415,24 @@ def send_email_dev(to: str, subject: str, body: str, link: Optional[str] = None,
                    accent: str = "#10b981", eyebrow: str = "FixMyCribs", preheader: str = "",
                    footnote: str = ""):
     """Send a transactional email. Uses real SMTP when configured; otherwise logs (dev)."""
+    resend_configured = bool(os.environ.get("RESEND_API_KEY") and os.environ.get("EMAIL_FROM"))
     smtp_configured = bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USERNAME") and os.environ.get("SMTP_PASSWORD"))
-    if smtp_configured:
+    if resend_configured or smtp_configured:
         if from_type == "welcome":
             from_email = os.environ.get("SMTP_FROM_EMAIL_WELCOME") or os.environ.get("SMTP_FROM_EMAIL") or os.environ.get("SMTP_USERNAME")
         else:
             from_email = os.environ.get("SMTP_FROM_EMAIL") or os.environ.get("SMTP_USERNAME")
-        from_name = os.environ.get("SMTP_FROM_NAME", "FixMyCribs")
+        from_name = os.environ.get("EMAIL_FROM_NAME") or os.environ.get("SMTP_FROM_NAME", "FixMyCribs")
+        if resend_configured:
+            from_email = os.environ["EMAIL_FROM"]
         html = _html_email(title or subject, body, link, cta=cta, accent=accent,
                            eyebrow=eyebrow, preheader=preheader or subject, footnote=footnote)
         # Fire-and-forget in a daemon thread so we never block the event loop.
-        threading.Thread(target=_smtp_send_sync, args=(to, subject, body, html, from_email, from_name), daemon=True).start()
+        sender = _resend_send_sync if resend_configured else _smtp_send_sync
+        threading.Thread(target=sender, args=(to, subject, body, html, from_email, from_name), daemon=True).start()
+        return
+    if APP_ENV == "production":
+        logger.error("Transactional email is not configured. No email sent to %s", to)
         return
     logger.info("=" * 72)
     logger.info(f"[DEV EMAIL] TO: {to}")
@@ -465,16 +494,23 @@ async def get_plan_config(plan_id: str) -> dict:
 async def get_effective_plan(user: dict) -> dict:
     """Return the effective plan config for the user based on subscription/status."""
     plan_id = user.get("plan", "starter")
-    plan_status = user.get("plan_status", "free")
+    status = user.get("plan_status", "free")
     expires = user.get("plan_expires_at")
-    # If expired, downgrade to starter (data not deleted, feature-gated)
-    if plan_id != "starter" and expires:
-        try:
-            if parse_date(expires[:10]) < date.today() and plan_status not in ("active", "gifted", "trial"):
+    # Paid access is granted only by valid, unexpired, supported plan states.
+    if user.get("role") == "owner" and plan_id != "starter":
+        if status not in ("active", "gifted", "trial", "non_renewing") or not expires:
+            plan_id = "starter"
+        else:
+            try:
+                end = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                if end <= datetime.now(timezone.utc):
+                    plan_id = "starter"
+            except (ValueError, TypeError):
                 plan_id = "starter"
-        except Exception:
-            pass
-    return await get_plan_config(plan_id)
+    cfg = await get_plan_config(plan_id)
+    return cfg if cfg.get("active", True) else await get_plan_config("starter")
 
 
 async def check_plan_limit(user: dict, key: str, current_count: int) -> bool:
@@ -607,9 +643,9 @@ async def on_startup():
         if not existing:
             await db.users.insert_one({
                 "id": new_id(),
-                "full_name": "FixMyCribs Admin",
+                "full_name": os.environ.get("ADMIN_SEED_NAME", "FixMyCribs Admin"),
                 "email": admin_email,
-                "phone": "",
+                "phone": os.environ.get("ADMIN_SEED_PHONE", ""),
                 "password_hash": hash_password(admin_pw),
                 "role": "admin",
                 "account_status": "active",
@@ -621,6 +657,15 @@ async def on_startup():
                 "updated_at": now_iso(),
             })
             logger.info(f"Seeded admin account: {admin_email}")
+        elif existing.get("role") == "admin":
+            # Seed variables may manage profile details but NEVER silently reset a password.
+            profile = {}
+            if os.environ.get("ADMIN_SEED_NAME"):
+                profile["full_name"] = os.environ["ADMIN_SEED_NAME"]
+            if os.environ.get("ADMIN_SEED_PHONE"):
+                profile["phone"] = os.environ["ADMIN_SEED_PHONE"]
+            if profile:
+                await db.users.update_one({"id": existing["id"]}, {"$set": profile})
 
     # Backfill defaults on existing user docs
     await db.users.update_many({"role": {"$exists": False}}, {"$set": {"role": "owner"}})
@@ -987,6 +1032,149 @@ async def change_password(data: ChangePasswordIn, user=Depends(get_current_user)
     return {"ok": True, "message": "Password updated"}
 
 
+@api_router.post("/admin/email/test")
+async def admin_test_email(user=Depends(get_current_user)):
+    """Admin-only test of transactional email transport. Sends to the logged-in admin."""
+    require_roles(user, ["admin"])
+    if not _transactional_email_ready():
+        raise HTTPException(503, "Configure Resend HTTPS or SMTP email variables")
+    from_name = os.environ.get("EMAIL_FROM_NAME", "FixMyCribs")
+    if os.environ.get("RESEND_API_KEY") and os.environ.get("EMAIL_FROM"):
+        try:
+            message_id = await asyncio.to_thread(
+                _resend_send_sync, user["email"], "FixMyCribs email test",
+                "Email delivery configuration is operational.",
+                "<p>FixMyCribs email delivery configuration is operational.</p>",
+                os.environ["EMAIL_FROM"], from_name,
+            )
+            return {"ok": True, "provider": "resend", "message_id": message_id}
+        except Exception:
+            logger.exception("Admin email delivery test failed")
+            raise HTTPException(502, "Email provider rejected the test. Check Railway logs")
+    try:
+        await asyncio.to_thread(_smtp_send_sync, user["email"], "FixMyCribs email test",
+            "Email delivery configuration is operational.",
+            "<p>FixMyCribs email delivery configuration is operational.</p>",
+            os.environ.get("SMTP_FROM_EMAIL") or os.environ["SMTP_USERNAME"], from_name)
+    except Exception:
+        raise HTTPException(502, "SMTP test failed. Check Railway logs")
+    return {"ok": True, "provider": "smtp", "note": "Check Railway logs for SMTP confirmation"}
+
+
+# ---------------- PAYSTACK GATEWAY ----------------
+def _paystack_key() -> str:
+    key = os.environ.get("PAYSTACK_SECRET_KEY", "")
+    if not key:
+        raise HTTPException(503, "Payment gateway is not configured")
+    # Prevent test transactions from unlocking paid plans in production.
+    if APP_ENV == "production" and not key.startswith("sk_live_"):
+        raise HTTPException(503, "A live Paystack key is required in production")
+    return key
+
+
+def _paystack_request_sync(method: str, path: str, body=None):
+    import requests
+    key = _paystack_key()
+    try:
+        response = requests.request(method, "https://api.paystack.co" + path,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=body, timeout=25)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("status") is not True:
+            raise ValueError("Paystack declined the operation")
+        return payload.get("data") or {}
+    except Exception:
+        logger.exception("Paystack API request failed (%s %s)", method, path.split("?")[0])
+        raise HTTPException(502, "Payment gateway is unavailable. Please try again")
+
+
+async def _complete_paystack_payment(reference: str, owner_id: str = None):
+    """Verify independently, match price/currency/customer, and activate once per charge."""
+    if not re.fullmatch(r"[A-Za-z0-9.=_-]{1,110}", reference or ""):
+        raise HTTPException(400, "Invalid payment reference")
+    session = await db.payment_sessions.find_one({"reference": reference, "provider": "paystack"})
+    if not session or (owner_id and session.get("owner_id") != owner_id):
+        raise HTTPException(404, "Payment session not found")
+    if session.get("status") == "paid":
+        return {"ok": True, "status": "already_paid", "plan": session["plan"]}
+    if session.get("status") != "pending":
+        raise HTTPException(409, "Payment is already being processed or is unavailable")
+    paid = await asyncio.to_thread(_paystack_request_sync, "GET", f"/transaction/verify/{reference}")
+    owner = await db.users.find_one({"id": session["owner_id"], "role": "owner"})
+    buyer = (paid.get("customer") or {}).get("email", "").lower()
+    if (not owner or paid.get("reference") != reference or paid.get("status") != "success"
+            or paid.get("currency") != "NGN"
+            or int(paid.get("amount") or 0) != session.get("amount_kobo")
+            or buyer != owner.get("email", "").lower()):
+        raise HTTPException(400, "Payment is pending or does not match the checkout")
+    domain = paid.get("domain", "")
+    key = _paystack_key()
+    if (key.startswith("sk_live_") and domain != "live") or (key.startswith("sk_test_") and domain != "test"):
+        raise HTTPException(400, "Payment environment mismatch")
+    # Atomic claim protects against concurrent webhook + browser verification.
+    claimed = await db.payment_sessions.find_one_and_update(
+        {"id": session["id"], "status": "pending"}, {"$set": {"status": "processing"}})
+    if not claimed:
+        return {"ok": True, "status": "processing", "plan": session["plan"]}
+    try:
+        now = datetime.now(timezone.utc)
+        expiry = (now + timedelta(days=30)).isoformat()
+        sub_doc = {
+            "id": new_id(), "owner_id": owner["id"], "plan": session["plan"],
+            "status": "active", "payment_provider": "paystack",
+            "provider_customer_id": str((paid.get("customer") or {}).get("customer_code") or ""),
+            "provider_subscription_id": reference,
+            "current_period_start": now.isoformat(), "current_period_end": expiry,
+            "cancelled_at": None, "created_at": now_iso(), "updated_at": now_iso(),
+            "auto_renews": False,
+        }
+        await db.subscriptions.update_one({"owner_id": owner["id"]}, {"$set": sub_doc}, upsert=True)
+        await db.users.update_one({"id": owner["id"]}, {"$set": {
+            "plan": session["plan"], "plan_status": "active",
+            "plan_started_at": now.isoformat(), "plan_expires_at": expiry,
+            "updated_at": now_iso()}})
+        await db.payment_sessions.update_one({"id": session["id"]}, {"$set": {
+            "status": "paid", "paid_at": now.isoformat(),
+            "provider_transaction_id": str(paid.get("id") or "")}})
+    except Exception:
+        logger.exception("Payment fulfillment incomplete; manual reconciliation required: %s", reference)
+        # Leave processing status for manual review; never auto-credit twice.
+        raise
+    return {"ok": True, "status": "paid", "plan": session["plan"], "expires_at": expiry}
+
+
+@api_router.post("/subscriptions/verify/{reference}")
+async def verify_subscription_payment(reference: str, user=Depends(get_current_user)):
+    require_roles(user, ["owner"])
+    return await _complete_paystack_payment(reference, owner_id=user["id"])
+
+
+@api_router.post("/webhooks/paystack")
+async def paystack_webhook(request: Request):
+    import hmac
+    body = await request.body()
+    key = _paystack_key()
+    signature = request.headers.get("x-paystack-signature", "")
+    digest = hmac.new(key.encode(), body, hashlib.sha512).hexdigest()
+    if not hmac.compare_digest(signature, digest):
+        raise HTTPException(401, "Invalid webhook signature")
+    try:
+        event = _json.loads(body)
+    except ValueError:
+        raise HTTPException(400, "Invalid event JSON")
+    if event.get("event") != "charge.success":
+        return {"ok": True, "ignored": True}
+    reference = (event.get("data") or {}).get("reference")
+    if not isinstance(reference, str):
+        return {"ok": True, "ignored": True}
+    # Only recognize checkouts created by our backend: unknown events cannot grant access.
+    session = await db.payment_sessions.find_one({"reference": reference, "provider": "paystack"})
+    if not session:
+        return {"ok": True, "ignored": True}
+    return await _complete_paystack_payment(reference)
+
+
 # ---------------- PLAN / SUBSCRIPTION ROUTES ----------------
 @api_router.get("/plans")
 async def get_plans():
@@ -1006,15 +1194,17 @@ async def current_subscription(user=Depends(get_current_user)):
         return {"plan": user.get("plan", "starter"), "plan_status": "free", "limits": (await get_effective_plan(user)).get("limits", {})}
     cfg = await get_effective_plan(user)
     sub = await db.subscriptions.find_one({"owner_id": user["id"]}, {"_id": 0})
+    effective_id = cfg.get("id", "starter")
     return {
-        "plan": user.get("plan", "starter"),
-        "plan_status": user.get("plan_status", "free"),
+        "plan": effective_id,
+        "plan_status": user.get("plan_status", "free") if effective_id != "starter" else "free",
         "plan_started_at": user.get("plan_started_at"),
         "plan_expires_at": user.get("plan_expires_at"),
         "gifted_until": user.get("gifted_until"),
         "limits": cfg.get("limits", {}),
         "features": cfg.get("features", []),
         "subscription": sub,
+        "payment_provider": os.environ.get("PAYMENT_PROVIDER", "paystack" if APP_ENV == "production" else "mock"),
     }
 
 @api_router.post("/subscriptions/checkout")
@@ -1023,28 +1213,40 @@ async def create_checkout(data: CheckoutIn, user=Depends(get_current_user)):
     if data.plan not in ("growth", "pro"):
         raise HTTPException(400, "Only paid plans (growth, pro) can be checked out")
     cfg = await get_plan_config(data.plan)
-    reference = f"mock_{new_id()[:16]}"
-    payment_provider = os.environ.get("PAYMENT_PROVIDER", "mock")
+    if not cfg.get("active", True):
+        raise HTTPException(400, "Plan is not currently available")
+    amount_ngn = cfg.get("price", 0)
+    if not isinstance(amount_ngn, (int, float)) or amount_ngn < 100 or round(amount_ngn * 100) != amount_ngn * 100:
+        raise HTTPException(503, "Plan price is not configured correctly")
+    payment_provider = os.environ.get("PAYMENT_PROVIDER", "paystack" if APP_ENV == "production" else "mock")
+    if payment_provider not in ("paystack", "mock") or (APP_ENV == "production" and payment_provider != "paystack"):
+        raise HTTPException(503, "A real payment provider must be configured before checkout")
+    if payment_provider == "paystack":
+        _paystack_key()
+    reference = ("fmc_" if payment_provider == "paystack" else "mock_") + new_id().replace("-", "")
     session = {
-        "id": new_id(),
-        "reference": reference,
-        "owner_id": user["id"],
-        "plan": data.plan,
-        "amount": cfg.get("price", 0),
-        "status": "pending",
-        "provider": payment_provider,
-        "created_at": now_iso(),
+        "id": new_id(), "reference": reference, "owner_id": user["id"],
+        "plan": data.plan, "amount": amount_ngn,
+        "amount_kobo": int(round(amount_ngn * 100)), "currency": "NGN",
+        "status": "pending", "provider": payment_provider, "created_at": now_iso(),
     }
     await db.payment_sessions.insert_one(session)
-    # For mock provider, return a URL to our own mock checkout page.
-    checkout_url = f"{FRONTEND_URL}/mock-checkout?ref={reference}"
-    return {
-        "checkout_url": checkout_url,
-        "reference": reference,
-        "provider": payment_provider,
-        "plan": data.plan,
-        "amount": cfg.get("price", 0),
-    }
+    if payment_provider == "paystack":
+        try:
+            provider_data = await asyncio.to_thread(_paystack_request_sync, "POST", "/transaction/initialize", {
+                "email": user["email"], "amount": session["amount_kobo"], "currency": "NGN",
+                "reference": reference,
+                "callback_url": f"{FRONTEND_URL.rstrip('/')}/dashboard/billing?reference={reference}",
+                "metadata": {"app": "fixmycribs", "plan": data.plan},
+            })
+            checkout_url = provider_data["authorization_url"]
+        except Exception:
+            await db.payment_sessions.update_one({"id": session["id"]}, {"$set": {"status": "failed"}})
+            raise
+    else:
+        checkout_url = f"{FRONTEND_URL}/mock-checkout?ref={reference}"
+    return {"checkout_url": checkout_url, "reference": reference,
+            "provider": payment_provider, "plan": data.plan, "amount": amount_ngn}
 
 @api_router.get("/subscriptions/checkout/{reference}")
 async def get_checkout(reference: str, user=Depends(get_current_user)):
@@ -1055,7 +1257,9 @@ async def get_checkout(reference: str, user=Depends(get_current_user)):
 
 @api_router.post("/subscriptions/mock-confirm")
 async def mock_confirm(data: MockPaymentConfirmIn, user=Depends(get_current_user)):
-    """Mock payment confirmation. Only for development. Simulates a successful webhook."""
+    """Mock payment confirmation. Disabled in production regardless of client state."""
+    if APP_ENV == "production" or os.environ.get("PAYMENT_PROVIDER", "mock") != "mock":
+        raise HTTPException(403, "Simulated payments are disabled")
     session = await db.payment_sessions.find_one({"reference": data.reference, "owner_id": user["id"]})
     if not session:
         raise HTTPException(404, "Checkout session not found")
@@ -2924,12 +3128,44 @@ async def admin_list_plans(user=Depends(get_current_user)):
 @api_router.patch("/admin/plans/{plan_id}")
 async def admin_update_plan(plan_id: str, data: dict, user=Depends(get_current_user)):
     require_roles(user, ["admin"])
-    data.pop("id", None)
-    data["updated_at"] = now_iso()
-    r = await db.plan_configs.update_one({"id": plan_id}, {"$set": data})
-    if r.matched_count == 0:
+    existing = await db.plan_configs.find_one({"id": plan_id})
+    if not existing:
         raise HTTPException(404, "Plan not found")
-    await log_action(user, "edit_plan", "plan", plan_id, after=data)
+    allowed = {"price", "features", "limits", "active"}
+    if not data or set(data) - allowed:
+        raise HTTPException(400, "Only price, features, limits, and active status can be edited")
+    updates = {}
+    if "price" in data:
+        price = data["price"]
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0 or price > 10000000 or price * 100 != round(price * 100):
+            raise HTTPException(400, "Invalid plan price")
+        if (plan_id == "starter" and price != 0) or (plan_id != "starter" and price < 100):
+            raise HTTPException(400, "Starter must be free and paid plans at least NGN 100")
+        updates["price"] = price
+    if "active" in data:
+        if not isinstance(data["active"], bool) or (plan_id == "starter" and data["active"] is False):
+            raise HTTPException(400, "Invalid plan active status")
+        updates["active"] = data["active"]
+    if "features" in data:
+        features = data["features"]
+        if not isinstance(features, list) or len(features) > 30 or any(not isinstance(f, str) or not 1 <= len(f.strip()) <= 120 for f in features):
+            raise HTTPException(400, "Features must be a list of short descriptions")
+        updates["features"] = [f.strip() for f in features]
+    if "limits" in data:
+        limits = data["limits"]
+        known = existing.get("limits", {})
+        if not isinstance(limits, dict) or set(limits) - set(known):
+            raise HTTPException(400, "Invalid plan limit fields")
+        for key, value in limits.items():
+            if isinstance(known[key], bool):
+                if not isinstance(value, bool):
+                    raise HTTPException(400, "Expected a boolean flag: " + key)
+            elif isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10000000:
+                raise HTTPException(400, "Invalid numeric limit: " + key)
+            updates[f"limits.{key}"] = value
+    updates["updated_at"] = now_iso()
+    await db.plan_configs.update_one({"id": plan_id}, {"$set": updates})
+    await log_action(user, "edit_plan", "plan", plan_id, after=updates)
     return {"ok": True}
 
 @api_router.get("/admin/audit-logs")

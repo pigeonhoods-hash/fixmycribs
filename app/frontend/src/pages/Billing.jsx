@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Card } from "@/components/ui/card";
@@ -16,6 +17,9 @@ export default function Billing() {
   const [plans, setPlans] = useState([]);
   const [sub, setSub] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const verifiedRef = useRef(null);
+  const paymentRef = params.get("reference");
 
   const load = async () => {
     const [pRes, sRes] = await Promise.all([api.get("/plans"), api.get("/subscriptions/current")]);
@@ -23,6 +27,26 @@ export default function Billing() {
     setSub(sRes.data);
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!paymentRef || verifiedRef.current === paymentRef) return;
+    verifiedRef.current = paymentRef;
+    const verify = async () => {
+      try {
+        const { data } = await api.post(`/subscriptions/verify/${encodeURIComponent(paymentRef)}`);
+        if (data.status === "processing") toast.info("Payment verification is underway. Refresh to check status.");
+        else {
+          toast.success("Payment verified by Paystack. Your subscription is updated.");
+          await refreshUser();
+          await load();
+        }
+      } catch (error) {
+        toast.error(error.response?.data?.detail || "Payment has not been verified. Your plan was not changed.");
+      } finally {
+        setParams((prev) => { const next = new URLSearchParams(prev); next.delete("reference"); return next; }, { replace: true });
+      }
+    };
+    verify();
+  }, [paymentRef, refreshUser, setParams]);
 
   const startCheckout = async (planId) => {
     if (planId === "starter") {
@@ -89,9 +113,11 @@ export default function Billing() {
       <Card className="p-6 border border-slate-200 bg-white flex items-start gap-4">
         <Info className="w-5 h-5 text-orange-600 mt-0.5 shrink-0" />
         <div>
-          <div className="font-display font-bold">Payments (development mode)</div>
+          <div className="font-display font-bold">Subscription payments</div>
           <p className="text-sm text-slate-600 mt-1">
-            The Growth and Pro plans require successful payment before activation. In development, clicking a paid plan opens a mock checkout page. In production, this will hand off to Paystack/Flutterwave and only activate the plan when the payment webhook confirms success.
+            Growth and Pro access activates only after the backend verifies a successful Paystack payment.
+            Each purchase covers 30 days. Renewal is manual until recurring billing is separately enabled and tested.
+            Never pay outside the official Paystack checkout link.
           </p>
         </div>
       </Card>
