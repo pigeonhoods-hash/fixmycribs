@@ -1,7 +1,9 @@
 import axios from "axios";
 
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").trim().replace(/\/+$/, "");
-export const API = `${BACKEND_URL}/api`;
+// On Vercel, same-origin requests are forwarded to Railway by vercel.json.
+// Keep the explicit backend URL for local development.
+export const API = process.env.NODE_ENV === "production" ? "/api" : `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
 
