@@ -1418,7 +1418,13 @@ async def list_units(pid: str, user=Depends(get_current_user)):
 @api_router.delete("/units/{uid}")
 async def delete_unit(uid: str, user=Depends(get_current_user)):
     require_roles(user, ["owner"])
-    await db.units.delete_one({"id": uid})
+    unit = await db.units.find_one({"id": uid})
+    if not unit:
+        raise HTTPException(404, "Unit not found")
+    owned = await db.properties.find_one({"id": unit["property_id"], "user_id": user["id"]}, {"_id": 0, "id": 1})
+    if not owned:
+        raise HTTPException(404, "Unit not found")
+    await db.units.delete_one({"id": uid, "property_id": owned["id"]})
     return {"ok": True}
 
 
