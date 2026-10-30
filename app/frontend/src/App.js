@@ -67,6 +67,7 @@ function Protected({ children, roles }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
+  if (user.role === "owner" && user.email_verified === false) return <Navigate to="/verify-email" replace />;
   if (roles && !hasRole(user, roles)) return <Navigate to={getDefaultDashboard(user)} replace />;
   return children;
 }
