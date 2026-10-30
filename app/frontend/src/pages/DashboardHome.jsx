@@ -84,6 +84,8 @@ export default function DashboardHome() {
         <p className="text-slate-500 mt-1">Here is what is happening across your rentals.</p>
       </div>
 
+      {summary.source_import_notice && <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">Figures include imported opening balances. Receipt dates are accounting references; lease dates remain unconfirmed. Mixed receipts were allocated to rent first, then fees. Review editable entries and unresolved sources in <Link className="underline" to="/dashboard/imported-records">Receipt and utility history</Link>.</p>}
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard testId="stat-properties" to="/dashboard/properties" icon={Building2} label="Properties" value={summary.total_properties} accent="bg-emerald-50 text-emerald-700" />
         <StatCard testId="stat-tenants" to="/dashboard/tenants" icon={Users} label="Tenants" value={summary.total_tenants} accent="bg-blue-50 text-blue-700" />
@@ -92,7 +94,7 @@ export default function DashboardHome() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard testId="stat-bills" to="/dashboard/bills" icon={Wallet} label="Utility & bills" value={formatNaira(summary.pending_rent)} accent="bg-slate-100 text-slate-700" subtitle="Diesel, electricity, service" />
+        <StatCard testId="stat-bills" to="/dashboard/bills" icon={Wallet} label="Utility & bills" value={formatNaira(summary.bills_outstanding || 0)} accent="bg-slate-100 text-slate-700" subtitle="Diesel, electricity, service" />
         {expSummary && (
           <>
             <StatCard testId="stat-income" to="/dashboard/expenses" icon={Wallet} label="Total Income" value={formatNaira(expSummary.income)} accent="bg-emerald-50 text-emerald-700" subtitle="Rent + bills collected" />
@@ -178,3 +180,4 @@ export default function DashboardHome() {
     </div>
   );
 }
+

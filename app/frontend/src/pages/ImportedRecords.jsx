@@ -24,7 +24,10 @@ export default function ImportedRecords() {
   const [form, setForm] = useState({});
   const [page, setPage] = useState(0);
   const [detail, setDetail] = useState(null);
-  const load = useCallback(async () => { const r = await api.get("/imported-records"); setData(r.data); }, []);
+  const [financialPayload, setFinancialPayload] = useState(null);
+  const [financialPreview, setFinancialPreview] = useState(null);
+  const [financialState, setFinancialState] = useState({posted_entries:0,review_items:[]});
+  const load = useCallback(async () => { const [r,f] = await Promise.all([api.get("/imported-records"),api.get("/financial-source-import")]); setData(r.data); setFinancialState(f.data); }, []);
   useEffect(() => { load().catch(e => setError(e.response?.data?.detail || "Could not load history")); }, [load]);
   async function selectFile(event) {
     setError(""); setPreview(null); setPayload(null); setMessage("");
@@ -41,6 +44,23 @@ export default function ImportedRecords() {
       if (commit) { setMessage(`Saved ${r.data.receipts_to_add} source records, ${r.data.properties_to_add} properties and ${r.data.occupants_to_add} occupants. ${r.data.already_imported} already imported. No invitations or new charges created.`); setPreview(null); await load(); }
       else setPreview(r.data);
     } catch(e) { setError(String(e.response?.data?.detail || e.message)); setPreview(null); }
+    finally { setBusy(false); }
+  }
+  async function selectFinances(event) {
+    setError(""); setFinancialPreview(null); setFinancialPayload(null);
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { setError("Use a JSON file smaller than 2 MB"); return; }
+    try { setFinancialPayload(JSON.parse(await file.text())); }
+    catch { setError("Invalid financial JSON"); }
+  }
+  async function postFinances(commit) {
+    setBusy(true); setError("");
+    try {
+      const r = await api.post(`/financial-source-import?dry_run=${!commit}`, financialPayload);
+      if (commit) { setMessage(`Posted ${r.data.entries_to_add} financial entries. ${r.data.already_posted} already posted. No invitations sent.`); setFinancialPreview(null); await load(); }
+      else setFinancialPreview(r.data);
+    } catch(e) { setError(String(e.response?.data?.detail || e.message)); setFinancialPreview(null); }
     finally { setBusy(false); }
   }
   function startEdit(record) {
@@ -73,6 +93,22 @@ export default function ImportedRecords() {
       {payload && <p className="text-sm">{payload.receipts?.length || 0} source records loaded.</p>}
       {preview && <div role="status" className="text-sm"><p>Preview: {preview.properties_to_add} properties, {preview.occupants_to_add} occupants and {preview.receipts_to_add} source records to add. {preview.already_imported} already imported.</p><p>{preview.properties.join(", ")}</p></div>}
       <div className="flex gap-3"><Button disabled={!payload || busy} onClick={() => runImport(false)}>Preview records</Button><Button disabled={!preview || busy} onClick={() => runImport(true)}>Import reviewed records</Button></div>
+    </Card>
+    <Card className="p-5 space-y-3">
+      <h2 className="font-semibold">Post reconciled finances</h2>
+      <p className="text-sm text-slate-600">Post source-backed rent, fee and utility entries to the financial ledger. Receipt dates are provisional accounting references; lease dates remain unconfirmed. Opening utility balances replace carried-forward observations. Mixed receipt payments use the allocation stated in each entry. Posted figures can be corrected in rent and bills.</p>
+      <label htmlFor="financial-file" className="block text-sm">Reconciled financial import JSON</label>
+      <input id="financial-file" type="file" accept=".json,application/json" onChange={selectFinances} disabled={busy} />
+      {financialPayload && <p>{financialPayload.entries?.length || 0} reconciled entries loaded.</p>}
+      {financialPreview && <div role="status" className="text-sm space-y-1">
+        <p>Financial preview: {financialPreview.entries_to_add} entries, {financialPreview.historical_profiles_to_add} historical profiles, {financialPreview.already_posted} already posted.</p>
+        <p>Rent: {amount(financialPreview.totals.rent_due)} expected; {amount(financialPreview.totals.rent_paid)} paid.</p>
+        <p>Fees and utilities: {amount(financialPreview.totals.bills_due)} expected; {amount(financialPreview.totals.bills_paid)} paid.</p>
+      </div>}
+      <div className="flex gap-3"><Button disabled={!financialPayload || busy} onClick={()=>postFinances(false)}>Preview finances</Button><Button disabled={!financialPreview || busy} onClick={()=>postFinances(true)}>Post financial entries</Button></div>
+      <p>{financialState.posted_entries} financial entries posted.</p>
+      {financialState.review_items.length > 0 && <details><summary>{financialState.review_items.length} source items require review</summary><ul className="list-disc pl-5 text-sm">{financialState.review_items.map((item,index)=><li key={`${item[0]}-${index}`}>{item[0]}: {item[1]}</li>)}</ul></details>}
+      <div className="flex gap-3 text-sm text-emerald-700"><Link to="/dashboard/payments">Payments</Link><Link to="/dashboard/bills">Bills</Link><Link to="/dashboard/past-tenants">Historical profiles</Link></div>
     </Card>
     <div className="flex flex-wrap gap-3 items-center">
       <label>Property <select aria-label="Filter property" value={filter} onChange={e => {setFilter(e.target.value);setPage(0);}} className="border p-2 rounded"><option value="all">All properties</option><option value="unassigned">Property not identified</option>{data.properties.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>

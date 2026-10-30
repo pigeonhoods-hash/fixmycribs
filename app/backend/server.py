@@ -2247,7 +2247,7 @@ async def tenant_start_conversation(user=Depends(get_current_user)):
 async def list_rent_records(user=Depends(get_current_user)):
     require_roles(user, ["owner"])
     active_ids = await _active_tenant_ids(user["id"])
-    items = await db.rent_records.find({"user_id": user["id"], "tenant_id": {"$in": active_ids}}, {"_id": 0}).sort("due_date", -1).to_list(5000000)
+    items = await db.rent_records.find({"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}, {"_id": 0}).sort("due_date", -1).to_list(5000000)
     for r in items:
         r["status"] = compute_status(r["due_date"], r["amount_due"], r["amount_paid"])
         t = await db.tenants.find_one({"id": r["tenant_id"]}, {"_id": 0})
@@ -2261,7 +2261,7 @@ async def list_rent_records(user=Depends(get_current_user)):
 async def overdue_records(user=Depends(get_current_user)):
     require_roles(user, ["owner"])
     active_ids = await _active_tenant_ids(user["id"])
-    items = await db.rent_records.find({"user_id": user["id"], "tenant_id": {"$in": active_ids}}, {"_id": 0}).to_list(5000000)
+    items = await db.rent_records.find({"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}, {"_id": 0}).to_list(5000000)
     result = []
     for r in items:
         r["status"] = compute_status(r["due_date"], r["amount_due"], r["amount_paid"])
@@ -2281,7 +2281,7 @@ async def overdue_records(user=Depends(get_current_user)):
 async def list_payments(user=Depends(get_current_user)):
     require_roles(user, ["owner"])
     active_ids = await _active_tenant_ids(user["id"])
-    items = await db.payments.find({"user_id": user["id"], "tenant_id": {"$in": active_ids}}, {"_id": 0}).sort("payment_date", -1).to_list(5000000)
+    items = await db.payments.find({"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}, {"_id": 0}).sort("payment_date", -1).to_list(5000000)
     for p in items:
         t = await db.tenants.find_one({"id": p["tenant_id"]}, {"_id": 0})
         p["tenant_name"] = t["full_name"] if t else "-"
@@ -2500,7 +2500,7 @@ async def dashboard_summary(user=Depends(get_current_user)):
     prop_count = await db.properties.count_documents({"user_id": user["id"]})
     tenant_count = await db.tenants.count_documents({"user_id": user["id"], "status": {"$nin": ["archived", "access_revoked"]}})
     active_ids = await _active_tenant_ids(user["id"])
-    records = await db.rent_records.find({"user_id": user["id"], "tenant_id": {"$in": active_ids}}, {"_id": 0}).to_list(5000000)
+    records = await db.rent_records.find({"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}, {"_id": 0}).to_list(5000000)
     total_expected = 0.0
     total_collected = 0.0
     pending = 0.0
@@ -2527,6 +2527,8 @@ async def dashboard_summary(user=Depends(get_current_user)):
     return {
         "total_properties": prop_count,
         "total_tenants": tenant_count,
+        "source_import_notice": any(r.get("source_import") for r in records),
+        "bills_outstanding": round(sum(max(0, b.get("balance", 0) or 0) for b in await db.utility_bills.find({"owner_id": user["id"]}, {"_id": 0, "balance": 1}).to_list(5000000)), 2),
         "rent_due_this_month": total_expected,
         "rent_collected": total_collected,
         "pending_rent": pending,
@@ -2553,8 +2555,8 @@ async def dashboard_chart(months: int = 6, user=Depends(get_current_user)):
             m += 12
             y -= 1
         month_list.append((y, m))
-    payments = await db.payments.find({"user_id": user["id"], "tenant_id": {"$in": active_ids}}, {"_id": 0}).to_list(5000000)
-    records = await db.rent_records.find({"user_id": user["id"], "tenant_id": {"$in": active_ids}}, {"_id": 0}).to_list(5000000)
+    payments = await db.payments.find({"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}, {"_id": 0}).to_list(5000000)
+    records = await db.rent_records.find({"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}, {"_id": 0}).to_list(5000000)
     expenses = await db.expenses.find({"user_id": user["id"]}, {"_id": 0}).to_list(5000000)
     out = []
     for (y, m) in month_list:
@@ -3628,7 +3630,7 @@ async def list_bills(
 ):
     require_roles(user, ["owner"])
     active_ids = await _active_tenant_ids(user["id"])
-    q: Dict[str, Any] = {"owner_id": user["id"], "tenant_id": {"$in": active_ids}}
+    q: Dict[str, Any] = {"owner_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}
     if bill_type and bill_type != "all":
         q["bill_type"] = bill_type
     if tenant_id and tenant_id != "all":
@@ -3720,7 +3722,7 @@ async def bills_summary(
 ):
     require_roles(user, ["owner"])
     active_ids = await _active_tenant_ids(user["id"])
-    q: Dict[str, Any] = {"owner_id": user["id"], "tenant_id": {"$in": active_ids}}
+    q: Dict[str, Any] = {"owner_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}
     if bill_type and bill_type != "all":
         q["bill_type"] = bill_type
     if tenant_id and tenant_id != "all":
@@ -4141,7 +4143,7 @@ async def export_bills(
     from openpyxl.styles import Font, PatternFill, Alignment
 
     active_ids = await _active_tenant_ids(user["id"])
-    q: Dict[str, Any] = {"owner_id": user["id"], "tenant_id": {"$in": active_ids}}
+    q: Dict[str, Any] = {"owner_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}
     if property_id and property_id != "all":
         q["property_id"] = property_id
     if tenant_id and tenant_id != "all":
@@ -5357,6 +5359,8 @@ async def security_headers(request: Request, call_next):
 
 from roster_import import register_roster_import
 register_roster_import(api_router, db, get_current_user, require_roles, get_effective_plan, now_iso)
+from financial_import import register_financial_import
+register_financial_import(api_router, db, get_current_user, require_roles, now_iso, compute_status)
 from portfolio_import import register_portfolio_import
 register_portfolio_import(api_router, db, get_current_user, require_roles, get_effective_plan, now_iso)
 
@@ -5368,3 +5372,4 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
