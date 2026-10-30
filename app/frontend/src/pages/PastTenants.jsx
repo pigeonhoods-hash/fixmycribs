@@ -35,7 +35,7 @@ export default function PastTenants() {
         <Clock className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
         <div className="text-sm">
           <div className="font-display font-bold text-amber-900">6-month retention policy</div>
-          <p className="text-amber-800 mt-0.5">Past tenants are stored here for <span className="font-bold">6 months</span> from the date they were archived or revoked. After that, their records (rent history, bills, complaints) are <span className="font-bold">permanently deleted</span>. Export anything you need to keep before then.</p>
+          <p className="text-amber-800 mt-0.5">Ordinary past tenants are stored here for <span className="font-bold">6 months</span> from the date they were archived or revoked. After that, their records (rent history, bills, complaints) are <span className="font-bold">permanently deleted</span>. Source-backed opening history is retained and labelled in the table.</p>
         </div>
       </div>
 
