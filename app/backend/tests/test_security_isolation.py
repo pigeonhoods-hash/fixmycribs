@@ -590,7 +590,10 @@ def test_facility_manager_invitation_roles_revocation(client):
                       headers=auth(token)).status_code == 200
     assert client.get("/api/admin/users", headers=auth(token)).status_code == 403
     assert client.get("/api/tenant/dashboard", headers=auth(token)).status_code == 403
-    assert client.get("/api/properties", headers=auth(token)).status_code == 403
+    # Facility managers have legitimate read-only access to their own owner\u0027s property list.
+    assert client.get("/api/properties", headers=auth(token)).status_code == 200
+    assert client.post("/api/properties", headers=auth(token), json={
+        "name": "Unauthorised", "type": "apartment", "address": "Denied"}).status_code == 403
     assert client.get("/api/support/tickets", headers=auth(token)).status_code == 403
     assert client.post(f"/api/fm-invites/{invite}/accept", json={
         "password": "SecondPassword!123"}).status_code == 400
