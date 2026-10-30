@@ -1392,7 +1392,9 @@ async def update_property(pid: str, data: PropertyIn, user=Depends(get_current_u
 @api_router.delete("/properties/{pid}")
 async def delete_property(pid: str, user=Depends(get_current_user)):
     require_roles(user, ["owner"])
-    await db.properties.delete_one({"id": pid, "user_id": user["id"]})
+    deleted = await db.properties.delete_one({"id": pid, "user_id": user["id"]})
+    if deleted.deleted_count == 0:
+        raise HTTPException(404, "Not found")
     await db.units.delete_many({"property_id": pid})
     return {"ok": True}
 
