@@ -22,7 +22,11 @@ export default function Login() {
     setLoading(true);
     try {
       const u = await login(email, password);
-      toast.success("Welcome back!");
+      if (u.role === "owner" && u.email_verified === false) {
+        toast.info("Please verify your email to access your dashboard.");
+      } else {
+        toast.success("Welcome back!");
+      }
       nav(getDefaultDashboard(u));
     } catch (err) {
       toast.error(err.response?.data?.detail || "Login failed");
