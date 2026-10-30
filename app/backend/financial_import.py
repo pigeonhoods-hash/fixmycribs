@@ -80,7 +80,7 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
             elif not e.get('historical'): raise HTTPException(400,'Current tenant not matched: '+e['tenant_name'])
             else:
                 tid=stable_id(owner,'historical-person:'+pid+':'+e['tenant_name'].casefold())
-                tenant=new_people.setdefault(tid,{'id':tid,'user_id':owner,'property_id':pid,'full_name':e['tenant_name'],'status':'archived','archived_at':now_iso(),'archive_reason':'Historical source profile; current occupancy not confirmed','tenant_user_id':None,'unit_id':None,'apartment_number':e.get('target_unit') or 'Not stated in source','rent_amount':None,'rent_frequency':'one_time','due_date':None,'lease_start':None,'lease_end':None,'email':e.get('email',''),'phone':e.get('phone',''),'whatsapp':'','invite_status':'not_sent','created_at':now_iso(),'notes':'Imported historical financial profile. No lease or move-out dates asserted.'})
+                tenant=new_people.setdefault(tid,{'id':tid,'user_id':owner,'property_id':pid,'full_name':e['tenant_name'],'status':'archived','archived_at':now_iso(),'archive_reason':'Historical source profile; current occupancy not confirmed','source_import_history':True,'retention_exempt':True,'tenant_user_id':None,'unit_id':None,'apartment_number':e.get('target_unit') or 'Not stated in source','rent_amount':None,'rent_frequency':'one_time','due_date':None,'lease_start':None,'lease_end':None,'email':e.get('email',''),'phone':e.get('phone',''),'whatsapp':'','invite_status':'not_sent','created_at':now_iso(),'notes':'Imported historical financial profile. No lease or move-out dates asserted.'})
             update=updates.setdefault(tenant['id'],{})
             for field in ('email','phone'):
                 if not tenant.get(field) and e.get(field): update[field]=e[field]
@@ -116,6 +116,13 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
                 pay={'id':stable_id(owner,'financial-payment:'+e['key']),'user_id':owner,'owner_id':owner,'tenant_id':doc['tenant_id'],'property_id':doc['property_id'],'amount':doc['amount_paid'],'payment_date':e['date'],'method':'historical_source','reference':e['key'],'receipt_number':e['key'],'notes':e['notes'],'source_keys':e['source_keys'],'source_import':True,'created_at':now_iso(),('rent_record_id' if collection=='rent_records' else 'bill_id'):doc['id']}
                 await getattr(db,pay_collection).update_one({'_id':pay['id']},{'$setOnInsert':pay},upsert=True)
             await db.financial_import_entries.update_one({'_id':doc['id']},{'$setOnInsert':{'owner_id':owner,'key':e['key'],'created_at':now_iso()}},upsert=True)
+        # Backfill the retention flag on source-history profiles created by an
+        # earlier batch. This deliberately runs on retry-safe commits too, so an
+        # existing import can repair its own metadata without duplicating money.
+        source_history=await db.tenants.find({'user_id':owner,'archive_reason':'Historical source profile; current occupancy not confirmed'},{'_id':0,'id':1}).to_list(10000)
+        for tenant in source_history:
+            await db.tenants.update_one({'id':tenant['id'],'user_id':owner},{'$set':{'source_import_history':True,'retention_exempt':True}})
+        result['retained_source_profiles']=len(source_history)
         return result
 
     @router.get('/financial-source-import')

@@ -1776,6 +1776,9 @@ async def purge_expired_past_tenants():
     # OR have no archived_at at all but were last updated before cutoff (legacy rows).
     q = {
         "status": {"$in": ["archived", "access_revoked"]},
+        # Source-backed opening history is part of the owner's permanent ledger,
+        # not a normal past-tenant profile eligible for the six-month cleanup.
+        "retention_exempt": {"$ne": True},
         "$or": [
             {"archived_at": {"$lt": cutoff}},
             {"archived_at": {"$exists": False}, "updated_at": {"$lt": cutoff}},
@@ -1815,9 +1818,14 @@ async def list_archived_tenants(user=Depends(get_current_user)):
         t["bills_expected"] = sum(b["amount_due"] for b in bills)
         t["bills_paid"] = sum(b["amount_paid"] for b in bills)
         t["total_outstanding"] = max(0.0, (t["rent_expected"] - t["rent_paid"]) + (t["bills_expected"] - t["bills_paid"]))
-        # Retention: compute the ISO purge date + days remaining
+        # Retention: source-backed opening history is permanent; ordinary past
+        # tenants retain the existing six-month cleanup schedule.
         arch = t.get("archived_at") or t.get("updated_at")
-        if arch:
+        if t.get("retention_exempt"):
+            t["purge_at"] = None
+            t["days_until_purge"] = None
+            t["retention_label"] = "Retained source history"
+        elif arch:
             try:
                 arch_dt = datetime.fromisoformat(arch.replace("Z", "+00:00"))
                 purge_dt = arch_dt + timedelta(days=PAST_TENANT_RETENTION_MONTHS * 30)

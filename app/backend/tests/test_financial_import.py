@@ -53,7 +53,11 @@ class FinancialTests(unittest.IsolatedAsyncioTestCase):
     async def test_historical_profile_has_no_access_or_recurring_rent(self):
         self.data['entries'][0].update(target_name='',tenant_name='Historical',historical=True)
         await self.call(False);t=self.db.tenants.rows[-1]
-        self.assertEqual(t['status'],'archived');self.assertIsNone(t['tenant_user_id']);self.assertIsNone(t['lease_start']);self.assertEqual(t['rent_frequency'],'one_time')
+        self.assertEqual(t['status'],'archived');self.assertIsNone(t['tenant_user_id']);self.assertIsNone(t['lease_start']);self.assertEqual(t['rent_frequency'],'one_time');self.assertTrue(t['retention_exempt']);self.assertTrue(t['source_import_history'])
+    async def test_retry_backfills_retention_on_existing_source_history(self):
+        self.db.tenants.rows.append({'id':'legacy-history','user_id':'o','property_id':'p','full_name':'Legacy','status':'archived','archive_reason':'Historical source profile; current occupancy not confirmed'})
+        r=await self.call(False);t=next(x for x in self.db.tenants.rows if x['id']=='legacy-history')
+        self.assertTrue(t['retention_exempt']);self.assertTrue(t['source_import_history']);self.assertEqual(r['retained_source_profiles'],1)
     async def test_invalid_amounts_dates_and_duplicate_keys(self):
         for change in [{'amount_paid':float('nan')},{'amount_due':-1},{'amount_paid':1001},{'date':'2026-02-30'},{'kind':'invalid'},{'amount_paid':True}]:
             d=copy.deepcopy(self.data);d['entries'][0].update(change)

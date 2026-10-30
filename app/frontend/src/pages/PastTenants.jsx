@@ -57,7 +57,7 @@ export default function PastTenants() {
                 <TableHead>Rent (paid / expected)</TableHead>
                 <TableHead>Bills (paid / expected)</TableHead>
                 <TableHead>Outstanding</TableHead>
-                <TableHead>Purge in</TableHead>
+                <TableHead>Retention</TableHead>
                 <TableHead></TableHead>
               </TableRow>
             </TableHeader>
@@ -72,7 +72,7 @@ export default function PastTenants() {
                   <TableCell className="text-sm">{formatNaira(t.bills_paid)} / {formatNaira(t.bills_expected)}</TableCell>
                   <TableCell className={`font-medium ${t.total_outstanding > 0 ? "text-red-600" : "text-emerald-700"}`}>{formatNaira(t.total_outstanding)}</TableCell>
                   <TableCell className="text-xs">
-                    {t.days_until_purge == null ? <span className="text-slate-400">—</span> : t.days_until_purge <= 0 ? <span className="text-red-600 font-semibold">Purging soon</span> : <span className={`${t.days_until_purge < 30 ? "text-red-600" : t.days_until_purge < 60 ? "text-amber-700" : "text-slate-600"} font-medium`}>{t.days_until_purge} days</span>}
+                    {t.retention_exempt ? <span className="text-emerald-700 font-medium">{t.retention_label || "Retained source history"}</span> : t.days_until_purge == null ? <span className="text-slate-400">—</span> : t.days_until_purge <= 0 ? <span className="text-red-600 font-semibold">Purging soon</span> : <span className={`${t.days_until_purge < 30 ? "text-red-600" : t.days_until_purge < 60 ? "text-amber-700" : "text-slate-600"} font-medium`}>{t.days_until_purge} days</span>}
                   </TableCell>
                   <TableCell><Button size="sm" variant="outline" onClick={() => openDetail(t)} data-testid={`open-past-${t.id}`}>View <ArrowRight className="w-3 h-3 ml-1" /></Button></TableCell>
                 </TableRow>
