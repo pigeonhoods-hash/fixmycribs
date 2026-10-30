@@ -205,6 +205,7 @@ def strip_private(doc: dict) -> dict:
     doc = dict(doc)
     doc.pop("_id", None)
     doc.pop("password_hash", None)
+    doc.pop("auth_version", None)
     return doc
 
 async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
@@ -1048,11 +1049,14 @@ async def reset_password(data: ResetPasswordIn):
     user = await db.users.find_one({"id": rec["user_id"]})
     if not user:
         raise HTTPException(400, "User not found")
+    consumed = await db.password_reset_tokens.update_one(
+        {"id": rec["id"], "status": "pending"}, {"$set": {"status": "used", "used_at": now_iso()}})
+    if consumed.modified_count != 1:
+        raise HTTPException(400, "This reset link has already been used")
     await db.users.update_one({"id": user["id"]}, {
         "$set": {"password_hash": hash_password(data.password), "updated_at": now_iso()},
         "$inc": {"auth_version": 1},
     })
-    await db.password_reset_tokens.update_one({"id": rec["id"]}, {"$set": {"status": "used", "used_at": now_iso()}})
     await log_action(user, "password_reset", "user", user["id"])
     return {"ok": True, "message": "Password updated. You can now log in."}
 
@@ -4495,6 +4499,16 @@ async def _store_evidence(file: UploadFile, max_bytes: int = 25 * 1024 * 1024):
     data = await file.read(max_bytes + 1)
     if not data or len(data) > max_bytes:
         raise HTTPException(400, "File must be between 1 byte and 25 MB")
+    signatures = {
+        "image/jpeg": data.startswith(bytes.fromhex("ffd8ff")),
+        "image/png": data.startswith(bytes.fromhex("89504e470d0a1a0a")),
+        "image/webp": data.startswith(b"RIFF") and data[8:12] == b"WEBP",
+        "video/mp4": len(data) > 12 and data[4:8] == b"ftyp",
+        "video/webm": data.startswith(bytes.fromhex("1a45dfa3")),
+        "application/pdf": data.startswith(b"%PDF-"),
+    }
+    if not signatures[mime]:
+        raise HTTPException(400, "File content does not match the permitted type")
     oid = await media_bucket.upload_from_stream(
         file.filename or "evidence", data, metadata={"content_type": mime, "created_at": now_iso()}
     )
@@ -5225,6 +5239,20 @@ async def dashboard_extras(user=Depends(get_current_user)):
         "all_bills_outstanding": all_out,
         "open_complaints": open_complaints,
     }
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/auth/") or request.url.path.startswith("/api/admin/"):
+        response.headers["Cache-Control"] = "no-store"
+    if APP_ENV == "production":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 app.include_router(api_router)
