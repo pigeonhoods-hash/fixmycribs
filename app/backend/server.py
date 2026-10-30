@@ -2993,9 +2993,13 @@ async def expenses_summary(
     if property_id and property_id != "all":
         tenant_q["property_id"] = property_id
         active_ids = [t["id"] async for t in db.tenants.find(tenant_q, {"_id": 0, "id": 1})]
-    pay_q = {"user_id": user["id"], "tenant_id": {"$in": active_ids}}
+    pay_q = {"user_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}
+    if property_id and property_id != "all":
+        pay_q["property_id"] = property_id
     payments = await db.payments.find(pay_q, {"_id": 0}).to_list(5000000) if include_rent else []
-    bp_q = {"owner_id": user["id"], "tenant_id": {"$in": active_ids}}
+    bp_q = {"owner_id": user["id"], "$or": [{"tenant_id": {"$in": active_ids}}, {"source_import": True}]}
+    if property_id and property_id != "all":
+        bp_q["property_id"] = property_id
     bill_pays = await db.bill_payments.find(bp_q, {"_id": 0}).to_list(5000000)
     rent_collected = sum(p["amount"] for p in payments if in_month(p.get("payment_date"))) if include_rent else 0
     bill_collected = sum(b["amount"] for b in bill_pays if in_month(b.get("payment_date")))
