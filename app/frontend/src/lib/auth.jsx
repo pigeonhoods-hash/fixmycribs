@@ -5,6 +5,7 @@ const AuthCtx = createContext(null);
 
 export function getDefaultDashboard(user) {
   if (!user) return "/login";
+  if (user.role === "owner" && user.email_verified === false) return "/verify-email";
   if (user.role === "admin") return "/admin";
   if (user.role === "tenant") return "/tenant";
   if (user.role === "support") return "/support";
