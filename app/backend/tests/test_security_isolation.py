@@ -303,6 +303,7 @@ def test_registration_verification_and_single_use_link(client, monkeypatch):
     assert response.json()["user"]["role"] == "owner"
     assert response.json()["user"]["email_verified"] is False
     assert "dev_verification_link" not in response.json()
+    assert response.json()["email_delivery_failed"] is False
     assert len(sent) == 1 and sent[0]["to"] == email
     raw = sent[0]["link"].split("/verify-email/")[-1]
     stored = client.portal.call(read_test_doc, "email_verification_tokens", {
@@ -449,3 +450,37 @@ def test_email_template_escapes_user_supplied_html():
     assert dangerous not in email
     assert "&lt;img" in email
 
+
+
+def test_signup_email_provider_rejection_is_reported_without_losing_account(client, monkeypatch):
+    email = unique_email()
+    def reject(**kwargs):
+        if kwargs.get("confirmed"):
+            raise RuntimeError("Simulated Resend 403")
+    monkeypatch.setattr(server, "send_email_dev", reject)
+    response = client.post("/api/auth/register", json={
+        "full_name": "Delivery Rejection", "email": email, "password": "Testing!123456"})
+    assert response.status_code == 200, response.text
+    assert response.json()["email_delivery_failed"] is True
+    assert response.json()["email_verification_required"] is True
+    stored = client.portal.call(read_test_doc, "users", {"email": email})
+    assert stored is not None and stored["email_verified"] is False
+    resend = client.post("/api/auth/resend-verification", headers=auth(response.json()["token"]))
+    assert resend.status_code == 502, resend.text
+    assert "Simulated" not in resend.text
+
+
+def test_sync_provider_transport_reports_403_cleanly(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        def json(self):
+            return {"message": "You can only send testing emails to your own email address"}
+        def raise_for_status(self):
+            import requests
+            raise requests.HTTPError("403", response=self)
+    import requests
+    monkeypatch.setenv("RESEND_API_KEY", "test-only")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResponse())
+    with pytest.raises(requests.HTTPError):
+        server._resend_send_sync("test@example.com", "Test", "plain", "<p>safe</p>",
+                                 "noreply@example.com", "FixMyCribs")
