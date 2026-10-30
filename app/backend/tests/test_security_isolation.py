@@ -82,7 +82,14 @@ def test_cross_owner_property_isolation(client):
     pid = created.json()["id"]
     assert client.get(f"/api/properties/{pid}", headers=auth(owner_a)).status_code == 200
     assert client.get(f"/api/properties/{pid}", headers=auth(owner_b)).status_code in (403, 404)
+    unit = client.post(f"/api/properties/{pid}/units", headers=auth(owner_a), json={
+        "unit_name": "Flat 1", "rent_amount": 1000, "rent_frequency": "monthly"})
+    assert unit.status_code == 200, unit.text
+    uid = unit.json()["id"]
+    assert client.delete(f"/api/units/{uid}", headers=auth(owner_b)).status_code in (403, 404)
     assert client.delete(f"/api/properties/{pid}", headers=auth(owner_b)).status_code in (403, 404)
+    assert client.get(f"/api/properties/{pid}", headers=auth(owner_a)).status_code == 200
+    assert client.delete(f"/api/units/{uid}", headers=auth(owner_a)).status_code == 200
 
 
 def test_change_password_revokes_previous_token(client):
