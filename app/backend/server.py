@@ -168,9 +168,11 @@ async def _create_email_verification(user: dict) -> str:
         "created_at": now_iso(),
     })
     link = f"{FRONTEND_URL}/verify-email/{raw}"
-    send_email_dev(
-        to=user["email"],
-        subject="Verify your FixMyCribs email",
+    try:
+        await asyncio.to_thread(
+            send_email_dev,
+            to=user["email"],
+            subject="Verify your FixMyCribs email",
         title="Confirm your email address",
         cta="Verify my email",
         accent="#10b981",
@@ -184,8 +186,13 @@ async def _create_email_verification(user: dict) -> str:
             f"Tap the button below to confirm this is really you and unlock full access."
         ),
         link=link,
-        from_type="noreply",
-    )
+            from_type="noreply",
+            confirmed=True,
+        )
+    except Exception:
+        # The token stays pending so the user can request a new email when the
+        # provider's verified-domain configuration is corrected.
+        raise HTTPException(502, "Verification email was rejected by the email provider. Please contact support or try again later.")
     return link
 
 def _validate_session_claims(payload: dict, user: dict):
@@ -442,6 +449,24 @@ def _resend_send_sync(to: str, subject: str, plain: str, html: str, from_email: 
         json={"from": f"{from_name} <{from_email}>", "to": [to],
               "subject": subject, "text": plain, "html": html}, timeout=25,
     )
+    if response.status_code >= 400:
+        # Log a safe diagnostic category without exposing the API key, tokenized links,
+        # addresses, or arbitrary response-body content.
+        try:
+            provider_message = str(response.json().get("message", "")).lower()
+        except (ValueError, AttributeError, TypeError):
+            provider_message = ""
+        if response.status_code == 403 and "testing emails" in provider_message:
+            reason = "testing_recipient_restriction"
+        elif response.status_code == 403 and ("domain" in provider_message or "verify" in provider_message):
+            reason = "sender_domain_not_verified"
+        elif response.status_code == 403:
+            reason = "provider_forbidden"
+        elif response.status_code == 401:
+            reason = "invalid_email_api_key"
+        else:
+            reason = "provider_rejection"
+        logger.error("[email->rejected] via=resend status=%d reason=%s", response.status_code, reason)
     response.raise_for_status()
     logger.info("[email->accepted] via=resend to=%s", to)
     return response.json().get("id")
@@ -456,8 +481,12 @@ def _transactional_email_ready() -> bool:
 def send_email_dev(to: str, subject: str, body: str, link: Optional[str] = None,
                    from_type: str = "noreply", cta: str = "Open", title: Optional[str] = None,
                    accent: str = "#10b981", eyebrow: str = "FixMyCribs", preheader: str = "",
-                   footnote: str = ""):
-    """Send a transactional email. Uses real SMTP when configured; otherwise logs (dev)."""
+                   footnote: str = "", confirmed: bool = False):
+    """Send a transactional email, optionally awaiting provider acceptance.
+
+    confirmed=True is intended for signup/verification where reporting success
+    before Resend responds would mislead the user.
+    """
     resend_configured = bool(os.environ.get("RESEND_API_KEY") and os.environ.get("EMAIL_FROM"))
     smtp_configured = bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USERNAME") and os.environ.get("SMTP_PASSWORD"))
     if resend_configured or smtp_configured:
@@ -470,12 +499,25 @@ def send_email_dev(to: str, subject: str, body: str, link: Optional[str] = None,
             from_email = os.environ["EMAIL_FROM"]
         html = _html_email(title or subject, body, link, cta=cta, accent=accent,
                            eyebrow=eyebrow, preheader=preheader or subject, footnote=footnote)
-        # Fire-and-forget in a daemon thread so we never block the event loop.
         sender = _resend_send_sync if resend_configured else _smtp_send_sync
-        threading.Thread(target=sender, args=(to, subject, body, html, from_email, from_name), daemon=True).start()
+        args = (to, subject, body, html, from_email, from_name)
+        def deliver():
+            try:
+                return sender(*args)
+            except Exception as exc:
+                logger.error("[email->failed] provider=%s status=%s",
+                             "resend" if resend_configured else "smtp",
+                             getattr(getattr(exc, "response", None), "status_code", "unknown"))
+                if confirmed:
+                    raise
+        if confirmed:
+            return deliver()
+        threading.Thread(target=deliver, daemon=True).start()
         return
     if APP_ENV == "production":
-        logger.error("Transactional email is not configured. No email sent to %s", to)
+        logger.error("Transactional email is not configured")
+        if confirmed:
+            raise RuntimeError("Transactional email is not configured")
         return
     logger.info("=" * 72)
     logger.info(f"[DEV EMAIL] TO: {to}")
@@ -913,10 +955,20 @@ async def register(data: RegisterIn):
         "updated_at": now_iso(),
     }
     await db.users.insert_one(user_doc)
-    dev_link = await _create_email_verification(user_doc)
+    email_failed = False
+    try:
+        dev_link = await _create_email_verification(user_doc)
+    except HTTPException as exc:
+        if exc.status_code != 502:
+            raise
+        email_failed = True
+        dev_link = None
     token = create_token(user_id)
-    resp = {"token": token, "user": strip_private(user_doc), "email_verification_required": True}
-    if APP_ENV == "development":
+    resp = {"token": token, "user": strip_private(user_doc), "email_verification_required": True,
+            "email_delivery_failed": email_failed}
+    if email_failed:
+        resp["message"] = "Your account was created, but the verification email could not be sent. The email service needs attention. You can sign in and retry verification later."
+    if APP_ENV == "development" and dev_link:
         resp["dev_verification_link"] = dev_link
     return resp
 
