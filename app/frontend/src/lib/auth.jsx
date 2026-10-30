@@ -50,7 +50,7 @@ export function AuthProvider({ children }) {
     localStorage.setItem("fmc_token", data.token);
     localStorage.setItem("fmc_user", JSON.stringify(data.user));
     setUser(data.user);
-    return data.user;
+    return { ...data.user, email_delivery_failed: Boolean(data.email_delivery_failed) };
   }, []);
 
   const setSession = useCallback((token, u) => {
