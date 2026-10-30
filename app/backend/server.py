@@ -5355,6 +5355,9 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+from roster_import import register_roster_import
+register_roster_import(api_router, db, get_current_user, require_roles, get_effective_plan, now_iso)
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,

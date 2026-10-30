@@ -320,7 +320,7 @@ export default function Tenants() {
                 <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
                   <div><div className="tiny-label text-slate-400">Apartment</div><div className="font-medium">{t.apartment_number || "—"}</div></div>
                   <div className="min-w-0"><div className="tiny-label text-slate-400">Property</div><div className="text-slate-600 truncate">{t.property_name}</div></div>
-                  <div><div className="tiny-label text-slate-400">Rent</div><div className="font-medium tabular-nums">{formatNaira(t.rent_amount)}</div></div>
+                  <div><div className="tiny-label text-slate-400">Rent</div><div className="font-medium tabular-nums">{t.rent_amount == null ? "Awaiting reconciliation" : formatNaira(t.rent_amount)}</div></div>
                   <div><div className="tiny-label text-slate-400">Due date</div><div className="text-slate-600">{formatDate(t.current_rent?.due_date || t.due_date)}</div></div>
                 </div>
                 <div className="mt-3 flex items-center justify-between gap-2">
@@ -369,7 +369,7 @@ export default function Tenants() {
                   </TableCell>
                   <TableCell className="font-medium">{t.apartment_number || "—"}</TableCell>
                   <TableCell className="text-slate-600">{t.property_name}</TableCell>
-                  <TableCell className="font-medium">{formatNaira(t.rent_amount)}</TableCell>
+                  <TableCell className="font-medium">{t.rent_amount == null ? "Awaiting reconciliation" : formatNaira(t.rent_amount)}</TableCell>
                   <TableCell className="text-slate-600">{formatDate(t.current_rent?.due_date || t.due_date)}</TableCell>
                   <TableCell>
                     <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${
@@ -444,3 +444,4 @@ export default function Tenants() {
     </div>
   );
 }
+
