@@ -16,6 +16,7 @@ import bcrypt
 import hashlib
 import secrets
 import re
+from html import escape as html_escape
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
 from pymongo import ReturnDocument
@@ -334,9 +335,16 @@ def _html_email(title: str, body: str, link: Optional[str], cta: str = "Open",
                 accent: str = "#10b981", eyebrow: str = "FixMyCribs",
                 preheader: str = "", footnote: str = "") -> str:
     """Build a premium, brand-aligned responsive HTML email (email-client-safe tables)."""
+    title = html_escape(title or "")
+    eyebrow = html_escape(eyebrow or "")
+    preheader = html_escape(preheader or "")
+    footnote = html_escape(footnote or "")
+    cta = html_escape(cta or "")
+    accent = accent if re.fullmatch(r"#[0-9A-Fa-f]{6}", accent or "") else "#10b981"
+    link = html_escape(link or "", quote=True) if link else None
     paras = "".join(
         f'<p style="margin:0 0 14px 0;font-size:15px;line-height:1.65;color:#334155;">{p}</p>'
-        for p in (body or "").split("\n\n") if p.strip()
+        for p in (html_escape(body or "")).split("\n\n") if p.strip()
     ).replace("\n", "<br/>")
     btn = ""
     if link:
