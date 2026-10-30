@@ -28,8 +28,12 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      await register(form);
-      toast.success("Account created! Please verify your email.");
+      const result = await register(form);
+      if (result?.email_delivery_failed) {
+        toast.error("Account created, but the verification email was rejected. The email service needs attention.");
+      } else {
+        toast.success("Account created! Please check your inbox to verify your email.");
+      }
       nav("/verify-email");
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail, "Registration failed"));
