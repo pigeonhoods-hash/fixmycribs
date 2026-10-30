@@ -17,6 +17,7 @@ import FeatureGate from "@/components/FeatureGate";
 import DashboardHome from "@/pages/DashboardHome";
 import Properties from "@/pages/Properties";
 import PropertyDetail from "@/pages/PropertyDetail";
+import ImportedRecords from "@/pages/ImportedRecords";
 import Tenants from "@/pages/Tenants";
 import TenantDetail from "@/pages/TenantDetail";
 import RentRecords from "@/pages/RentRecords";
@@ -95,6 +96,7 @@ function App() {
             <Route index element={<DashboardHome />} />
             <Route path="properties" element={<Properties />} />
             <Route path="properties/:id" element={<PropertyDetail />} />
+            <Route path="imported-records" element={<ImportedRecords />} />
             <Route path="tenants" element={<Tenants />} />
             <Route path="tenants/:id" element={<TenantDetail />} />
             <Route path="past-tenants" element={<PastTenants />} />
@@ -164,3 +166,4 @@ function App() {
 }
 
 export default App;
+

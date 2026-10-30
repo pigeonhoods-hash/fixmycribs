@@ -53,6 +53,7 @@ export default function PropertyDetail() {
         <div className="tiny-label text-emerald-700">{prop.type}</div>
         <h1 className="font-display text-3xl font-bold tracking-tight mt-2">{prop.name}</h1>
         <p className="text-slate-500 mt-1">{prop.address}{prop.city ? `, ${prop.city}` : ""}{prop.state ? `, ${prop.state}` : ""}</p>
+        <Link to={`/dashboard/imported-records?property=${id}`} className="inline-block mt-2 text-sm text-emerald-700 underline">Receipt and utility history</Link>
       </div>
 
       {prop.capacity > 0 && (

@@ -73,6 +73,7 @@ export default function Properties() {
           <div className="tiny-label text-emerald-700">Portfolio</div>
           <h1 className="font-display text-3xl font-bold tracking-tight mt-2">Properties</h1>
           <p className="text-slate-500 mt-1">Manage all your rental properties.</p>
+          <Link to="/dashboard/imported-records" className="inline-block mt-2 text-sm text-emerald-700 underline">Receipt and utility history</Link>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
@@ -196,3 +197,4 @@ export default function Properties() {
     </div>
   );
 }
+
