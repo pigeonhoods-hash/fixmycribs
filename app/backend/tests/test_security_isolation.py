@@ -131,3 +131,162 @@ def test_prod_mock_payment_disabled(client):
     result = client.post("/api/subscriptions/mock-confirm", json={"reference": "mock_untrusted"},
                          headers=auth(token))
     assert result.status_code == 403
+
+
+# Round 2: financial-integrity, tenant-boundary, and account-recovery testing.
+def make_property(client, token, name="Building"):
+    response = client.post("/api/properties", headers=auth(token), json={
+        "name": name, "type": "apartment", "address": "Security test property",
+        "city": "Lagos", "state": "Lagos"})
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
+def make_tenant(client, token, property_id):
+    response = client.post("/api/tenants", headers=auth(token), json={
+        "full_name": "Synthetic Tenant", "email": "", "phone": "",
+        "property_id": property_id, "apartment_number": "Security 1",
+        "rent_amount": 1000, "rent_frequency": "monthly", "due_date": "2026-12-31"})
+    assert response.status_code == 200, response.text
+    tid = response.json()["id"]
+    detail = client.get(f"/api/tenants/{tid}", headers=auth(token))
+    assert detail.status_code == 200, detail.text
+    return tid, detail.json()["rent_records"][0]["id"]
+
+
+async def read_test_doc(collection, query):
+    return await getattr(server.db, collection).find_one(query)
+
+
+async def insert_test_doc(collection, doc):
+    await getattr(server.db, collection).insert_one(doc)
+
+
+async def seed_role(role, email):
+    uid = server.new_id()
+    await server.db.users.insert_one({
+        "id": uid, "email": email, "role": role,
+        "full_name": "Synthetic Privileged User",
+        "password_hash": server.hash_password("Testing!123456"),
+        "account_status": "active", "email_verified": True, "created_at": server.now_iso(),
+        "plan": "starter", "plan_status": "free",
+    })
+    return uid
+
+
+def test_financial_integrity_negative_rent_payment(client):
+    _, _, owner = register(client)
+    prop = make_property(client, owner)
+    tid, rid = make_tenant(client, owner, prop)
+    response = client.post("/api/payments", headers=auth(owner), json={
+        "tenant_id": tid, "rent_record_id": rid, "amount": -500})
+    assert response.status_code in (400, 422), response.text
+    rec = client.get(f"/api/tenants/{tid}", headers=auth(owner)).json()["rent_records"][0]
+    assert rec["amount_paid"] == 0
+
+
+def test_financial_integrity_rent_record_tenant_mismatch(client):
+    _, _, owner = register(client)
+    prop = make_property(client, owner)
+    tid, rid = make_tenant(client, owner, prop)
+    other_tid, _ = make_tenant(client, owner, prop)
+    response = client.post("/api/payments", headers=auth(owner), json={
+        "tenant_id": other_tid, "rent_record_id": rid, "amount": 100})
+    assert response.status_code in (400, 403, 404, 422), response.text
+    rec = client.get(f"/api/tenants/{tid}", headers=auth(owner)).json()["rent_records"][0]
+    assert rec["amount_paid"] == 0
+
+
+def test_tenant_cannot_be_moved_to_foreign_landlord_property(client):
+    _, _, owner_a = register(client)
+    _, _, owner_b = register(client)
+    own_property = make_property(client, owner_a)
+    foreign_property = make_property(client, owner_b)
+    tid, _ = make_tenant(client, owner_a, own_property)
+    response = client.patch(f"/api/tenants/{tid}", headers=auth(owner_a),
+                            json={"property_id": foreign_property})
+    assert response.status_code in (400, 403, 404, 422), response.text
+    updated = client.get(f"/api/tenants/{tid}", headers=auth(owner_a)).json()
+    assert updated["property_id"] == own_property
+
+
+def test_negative_bill_payment_cannot_increase_debt(client):
+    _, _, owner = register(client)
+    prop = make_property(client, owner)
+    tid, _ = make_tenant(client, owner, prop)
+    bill = "security_bill_" + uuid.uuid4().hex
+    client.portal.call(insert_test_doc, "utility_bills", {
+        "id": bill, "owner_id": client.portal.call(read_test_doc, "tenants", {"id": tid})["user_id"],
+        "tenant_id": tid, "property_id": prop, "bill_type": "service_charge",
+        "amount_due": 1000, "amount_paid": 0, "balance": 1000,
+        "due_date": "2026-12-31", "status": "issued", "title": "Security fixture"})
+    response = client.post(f"/api/bills/{bill}/payments", headers=auth(owner),
+                           json={"amount": -100, "method": "cash"})
+    assert response.status_code in (400, 422), response.text
+    stored = client.portal.call(read_test_doc, "utility_bills", {"id": bill})
+    assert stored["amount_paid"] == 0
+
+
+def test_bill_amount_cannot_be_set_negative(client):
+    _, _, owner = register(client)
+    prop = make_property(client, owner)
+    tid, _ = make_tenant(client, owner, prop)
+    bill = "security_bill_" + uuid.uuid4().hex
+    t = client.portal.call(read_test_doc, "tenants", {"id": tid})
+    client.portal.call(insert_test_doc, "utility_bills", {
+        "id": bill, "owner_id": t["user_id"], "tenant_id": tid, "property_id": prop,
+        "bill_type": "service_charge", "amount_due": 1000, "amount_paid": 0,
+        "balance": 1000, "status": "issued", "due_date": "2026-12-31", "title": "Fixture"})
+    response = client.patch(f"/api/bills/{bill}", headers=auth(owner), json={"amount_due": -500})
+    assert response.status_code in (400, 422), response.text
+    stored = client.portal.call(read_test_doc, "utility_bills", {"id": bill})
+    assert stored["amount_due"] == 1000
+
+
+def test_admin_reset_revokes_existing_owner_sessions(client):
+    email, _, token = register(client)
+    target = client.portal.call(read_test_doc, "users", {"email": email})
+    admin_uid = client.portal.call(seed_role, "admin", unique_email())
+    admin_token = server.create_token(admin_uid)
+    response = client.post(f"/api/admin/users/{target['id']}/reset-password",
+                           headers=auth(admin_token), json={"new_password": "ResetSecurity!123"})
+    assert response.status_code == 200, response.text
+    assert client.get("/api/auth/me", headers=auth(token)).status_code == 401
+
+
+def test_cross_landlord_billing_and_tenant_listing(client):
+    _, _, owner_a = register(client)
+    _, _, owner_b = register(client)
+    pid = make_property(client, owner_a)
+    tid, rid = make_tenant(client, owner_a, pid)
+    for method, path, data in [
+        ("GET", f"/api/tenants/{tid}", None),
+        ("POST", f"/api/rent-records/{rid}/mark-fully-paid", None),
+        ("POST", f"/api/rent-records/{rid}/mark-unpaid", None),
+        ("POST", "/api/payments", {"tenant_id": tid, "rent_record_id": rid, "amount": 100}),
+    ]:
+        res = client.request(method, path, headers=auth(owner_b), json=data)
+        assert res.status_code in (400, 403, 404, 422), f"{method} {path}: {res.status_code} {res.text}"
+
+
+def test_nonadmin_cannot_reset_other_users_password(client):
+    _, _, owner = register(client)
+    admin = client.portal.call(seed_role, "admin", unique_email())
+    result = client.post(f"/api/admin/users/{admin}/reset-password",
+                         headers=auth(owner), json={"new_password": "StrongReset!123"})
+    assert result.status_code == 403, result.text
+
+
+def test_security_headers_on_auth_response(client):
+    response = client.post("/api/auth/login",
+                           json={"email": unique_email(), "password": "Wrong!123456"})
+    assert response.headers.get("x-content-type-options") == "nosniff"
+    assert response.headers.get("cache-control") == "no-store"
+    assert response.headers.get("x-frame-options") == "DENY"
+
+
+def test_declared_oversized_json_rejected(client):
+    response = client.post("/api/auth/login", headers={
+        "Content-Length": str(3 * 1024 * 1024)
+    }, json={"email": unique_email(), "password": "Wrong!123456"})
+    assert response.status_code == 413, response.text
