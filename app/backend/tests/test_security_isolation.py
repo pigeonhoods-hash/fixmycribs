@@ -41,7 +41,12 @@ def register(client):
     resp = client.post("/api/auth/register", json={
         "email": email, "password": password, "full_name": "Security Test"})
     assert resp.status_code == 200, resp.text
+    client.portal.call(mark_test_email_verified, email)
     return email, password, resp.json()["token"]
+
+
+async def mark_test_email_verified(email):
+    await server.db.users.update_one({"email": email}, {"$set": {"email_verified": True}})
 
 
 def auth(token):
@@ -64,7 +69,7 @@ def test_bearer_token_forgery_and_authorization(client):
     assert client.get("/api/auth/me", headers=auth(token)).status_code == 200
     assert client.get("/api/auth/me", headers=auth("forged.invalid.token")).status_code == 401
     assert client.get("/api/admin/users", headers=auth(token)).status_code == 403
-    assert client.get("/api/admin/email/test", headers=auth(token)).status_code == 403
+    assert client.post("/api/admin/email/test", headers=auth(token)).status_code == 403
 
 
 def test_cross_owner_property_isolation(client):
