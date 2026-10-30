@@ -484,3 +484,231 @@ def test_sync_provider_transport_reports_403_cleanly(monkeypatch):
     with pytest.raises(requests.HTTPError):
         server._resend_send_sync("test@example.com", "Test", "plain", "<p>safe</p>",
                                  "noreply@example.com", "FixMyCribs")
+
+
+# Final round: end-to-end role boundaries and lifecycle revocation.
+async def update_test_doc(collection, query, values):
+    return await getattr(server.db, collection).update_one(query, {"$set": values})
+
+
+def seed_invited_tenant(client, owner_token, property_id):
+    tid, _ = make_tenant(client, owner_token, property_id)
+    owner = client.get("/api/auth/me", headers=auth(owner_token)).json()
+    email = unique_email()
+    raw = server.create_secure_token()
+    client.portal.call(update_test_doc, "tenants", {"id": tid},
+                       {"email": email, "invite_status": "sent"})
+    client.portal.call(insert_test_doc, "tenant_invites", {
+        "id": server.new_id(), "tenant_id": tid, "owner_id": owner["id"],
+        "email": email, "token_hash": server.sha256_token(raw), "status": "pending",
+        "expires_at": "2030-12-31T00:00:00+00:00",
+        "created_at": server.now_iso()})
+    return tid, email, raw
+
+
+def seed_invited_manager(client, owner_token, permissions=None):
+    owner = client.get("/api/auth/me", headers=auth(owner_token)).json()
+    fid = server.new_id()
+    email = unique_email()
+    raw = server.create_secure_token()
+    client.portal.call(insert_test_doc, "facility_managers", {
+        "id": fid, "owner_id": owner["id"], "user_id": None,
+        "full_name": "Synthetic Facility Manager", "email": email,
+        "phone": "", "status": "pending_invite",
+        "permissions": permissions or {}, "created_at": server.now_iso()})
+    client.portal.call(insert_test_doc, "facility_manager_invites", {
+        "id": server.new_id(), "facility_manager_id": fid,
+        "owner_id": owner["id"], "email": email,
+        "token_hash": server.sha256_token(raw), "status": "pending",
+        "expires_at": "2030-12-31T00:00:00+00:00", "created_at": server.now_iso()})
+    return fid, email, raw
+
+
+def test_tenant_invitation_signin_portal_permissions_and_revocation(client):
+    _, _, owner = register(client)
+    prop = make_property(client, owner)
+    tid, email, invite = seed_invited_tenant(client, owner, prop)
+    info = client.get(f"/api/invites/{invite}")
+    assert info.status_code == 200, info.text
+    accepted = client.post(f"/api/invites/{invite}/accept", json={
+        "password": "TenantSecure!123", "full_name": "Test Tenant"})
+    assert accepted.status_code == 200, accepted.text
+    tenant_token = accepted.json()["token"]
+    assert accepted.json()["user"]["role"] == "tenant"
+    assert client.get("/api/tenant/me", headers=auth(tenant_token)).status_code == 200
+    assert client.get("/api/tenant/dashboard", headers=auth(tenant_token)).status_code == 200
+    assert client.get("/api/admin/users", headers=auth(tenant_token)).status_code == 403
+    assert client.get("/api/properties", headers=auth(tenant_token)).status_code == 403
+    assert client.get("/api/support/tickets", headers=auth(tenant_token)).status_code == 403
+    assert client.post(f"/api/invites/{invite}/accept", json={
+        "password": "StolenLink!123"}).status_code == 400
+    revoked = client.post(f"/api/tenants/{tid}/revoke-access", headers=auth(owner))
+    assert revoked.status_code == 200, revoked.text
+    assert client.get("/api/tenant/me", headers=auth(tenant_token)).status_code == 403
+    assert client.post("/api/auth/login", json={"email": email,
+        "password": "TenantSecure!123"}).status_code == 403
+
+
+def test_cross_tenant_messages_and_tenant_portals(client):
+    _, _, owner = register(client)
+    prop = make_property(client, owner)
+    first_tid, _, first_invite = seed_invited_tenant(client, owner, prop)
+    second_tid, _, second_invite = seed_invited_tenant(client, owner, prop)
+    first_resp = client.post(f"/api/invites/{first_invite}/accept",
+                             json={"password": "TenantSecure!123"})
+    second_resp = client.post(f"/api/invites/{second_invite}/accept",
+                              json={"password": "TenantSecure!123"})
+    assert first_resp.status_code == 200 and second_resp.status_code == 200
+    first = first_resp.json()["token"]
+    second = second_resp.json()["token"]
+    start = client.post("/api/messages/start-with-landlord", headers=auth(first))
+    assert start.status_code == 200, start.text
+    cid = start.json()["id"]
+    assert client.get(f"/api/messages/conversations/{cid}",
+                      headers=auth(second)).status_code == 403
+    assert client.post(f"/api/messages/conversations/{cid}", headers=auth(second),
+                       json={"message": "Intrusion"}).status_code == 403
+    assert client.get("/api/tenant/dashboard", headers=auth(second)).status_code == 200
+    assert client.get("/api/tenant/dashboard", headers=auth(first)).status_code == 200
+    assert client.post(f"/api/messages/start-with-tenant/{second_tid}",
+                       headers=auth(first)).status_code == 403
+    assert client.post(f"/api/messages/start-with-tenant/{first_tid}",
+                       headers=auth(owner)).status_code == 200
+
+
+def test_facility_manager_invitation_roles_revocation(client):
+    _, _, owner = register(client)
+    fid, email, invite = seed_invited_manager(client, owner,
+        {"view_complaints": True, "update_complaints": True})
+    response = client.post(f"/api/fm-invites/{invite}/accept", json={
+        "password": "FacilitySecure!123", "full_name": "Site Manager"})
+    assert response.status_code == 200, response.text
+    token = response.json()["token"]
+    assert response.json()["user"]["role"] == "facility_manager"
+    assert client.get("/api/facility-manager/me", headers=auth(token)).status_code == 200
+    assert client.get("/api/facility-manager/complaints",
+                      headers=auth(token)).status_code == 200
+    assert client.get("/api/admin/users", headers=auth(token)).status_code == 403
+    assert client.get("/api/tenant/dashboard", headers=auth(token)).status_code == 403
+    assert client.get("/api/properties", headers=auth(token)).status_code == 403
+    assert client.get("/api/support/tickets", headers=auth(token)).status_code == 403
+    assert client.post(f"/api/fm-invites/{invite}/accept", json={
+        "password": "SecondPassword!123"}).status_code == 400
+    assert client.delete(f"/api/facility-managers/{fid}",
+                         headers=auth(owner)).status_code == 200
+    assert client.get("/api/facility-manager/me", headers=auth(token)).status_code == 403
+    assert client.post("/api/auth/login", json={"email": email,
+        "password": "FacilitySecure!123"}).status_code == 403
+
+
+def test_facility_manager_view_complaints_permission_enforced(client):
+    _, _, owner = register(client)
+    fid, _, invite = seed_invited_manager(client, owner,
+        {"view_complaints": False, "update_complaints": False,
+         "view_tenant_contact": False})
+    manager = client.post(f"/api/fm-invites/{invite}/accept", json={
+        "password": "FacilitySecure!123"})
+    assert manager.status_code == 200, manager.text
+    token = manager.json()["token"]
+    owner_data = client.get("/api/auth/me", headers=auth(owner)).json()
+    cid = server.new_id()
+    client.portal.call(insert_test_doc, "maintenance_complaints", {
+        "id": cid, "owner_id": owner_data["id"], "tenant_id": server.new_id(),
+        "assigned_to_facility_manager_id": fid, "status": "assigned",
+        "tenant_phone": "+234123456789", "tenant_email": "private@example.com",
+        "created_at": server.now_iso()})
+    assert client.get("/api/facility-manager/complaints", headers=auth(token)).status_code == 403
+    assert client.get(f"/api/facility-manager/complaints/{cid}",
+                      headers=auth(token)).status_code == 403
+    assert client.patch(f"/api/facility-manager/complaints/{cid}/status",
+        headers=auth(token), json={"status": "in_progress"}).status_code == 403
+
+
+def test_facility_manager_assignment_isolated_between_landlords(client):
+    _, _, first_owner = register(client)
+    _, _, other_owner = register(client)
+    fid, _, invite = seed_invited_manager(client, first_owner, {
+        "view_complaints": True, "update_complaints": True,
+        "view_tenant_contact": False})
+    accepted = client.post(f"/api/fm-invites/{invite}/accept", json={
+        "password": "FacilitySecure!123"})
+    assert accepted.status_code == 200, accepted.text
+    manager = accepted.json()["token"]
+    other_owner_id = client.get("/api/auth/me", headers=auth(other_owner)).json()["id"]
+    complaint_id = server.new_id()
+    client.portal.call(insert_test_doc, "maintenance_complaints", {
+        "id": complaint_id, "owner_id": other_owner_id,
+        "tenant_id": server.new_id(), "status": "assigned",
+        "assigned_to_facility_manager_id": server.new_id(),
+        "created_at": server.now_iso()})
+    assert client.get(f"/api/facility-manager/complaints/{complaint_id}",
+                      headers=auth(manager)).status_code == 404
+    assert client.patch(f"/api/facility-manager/complaints/{complaint_id}/status",
+                        headers=auth(manager),
+                        json={"status": "completed", "completion_note": "fake"}).status_code == 404
+
+
+def test_support_ticket_owner_fm_tenant_and_internal_note_boundaries(client):
+    _, _, owner = register(client)
+    _, _, stranger = register(client)
+    admin_id = client.portal.call(seed_role, "admin", unique_email())
+    admin_token = server.create_token(admin_id)
+    support_email = unique_email()
+    staff = client.post("/api/admin/support-users", headers=auth(admin_token), json={
+        "full_name": "Synthetic Support Agent", "email": support_email,
+        "password": "SupportSecure!123", "role": "support"})
+    assert staff.status_code == 200, staff.text
+    login = client.post("/api/auth/login",
+                        json={"email": support_email, "password": "SupportSecure!123"})
+    assert login.status_code == 200, login.text
+    support_token = login.json()["token"]
+    ticket = client.post("/api/support-tickets", headers=auth(owner), json={
+        "subject": "Utility bill question", "category": "billing",
+        "message": "Need billing clarification"})
+    assert ticket.status_code == 200, ticket.text
+    tid = ticket.json()["id"]
+    assert client.get(f"/api/support-tickets/{tid}", headers=auth(stranger)).status_code == 403
+    assert client.post(f"/api/support-tickets/{tid}/messages",
+        headers=auth(stranger), json={"message": "Intrusion"}).status_code == 403
+    assert client.post(f"/api/support-tickets/{tid}/messages",
+        headers=auth(owner), json={"message": "secret", "internal": True}).status_code == 403
+    private = client.post(f"/api/support-tickets/{tid}/messages",
+        headers=auth(support_token), json={"message": "Internal staff note", "internal": True})
+    assert private.status_code == 200, private.text
+    visible_owner = client.get(f"/api/support-tickets/{tid}", headers=auth(owner))
+    assert visible_owner.status_code == 200
+    assert all(not m.get("internal") for m in visible_owner.json()["messages"])
+    staff_view = client.get(f"/api/support-tickets/{tid}", headers=auth(support_token))
+    assert any(m["message"] == "Internal staff note" for m in staff_view.json()["messages"])
+    assert client.patch(f"/api/support/tickets/{tid}", headers=auth(stranger),
+                        json={"status": "resolved"}).status_code == 403
+    assert client.get("/api/admin/users", headers=auth(support_token)).status_code == 403
+    assert client.get("/api/tenants", headers=auth(support_token)).status_code == 403
+    assert client.post("/api/admin/support-users", headers=auth(support_token), json={
+        "full_name": "Malicious Admin", "email": unique_email(),
+        "password": "BadEscalation!123", "role": "admin"}).status_code == 403
+    result = client.patch(f"/api/support/tickets/{tid}",
+        headers=auth(support_token), json={"status": "resolved"})
+    assert result.status_code == 200, result.text
+    assert client.get("/api/support/tickets", headers=auth(support_token)).status_code == 200
+    assert client.post("/api/support-tickets", headers=auth(support_token), json={
+        "subject": "Not allowed", "message": "Test"}).status_code == 403
+
+
+def test_cross_owner_support_ticket_and_messages_cannot_escalate(client):
+    _, _, owner1 = register(client)
+    _, _, owner2 = register(client)
+    a = client.post("/api/support-tickets", headers=auth(owner1),
+                    json={"subject": "Issue 1", "message": "First account"})
+    b = client.post("/api/support-tickets", headers=auth(owner2),
+                    json={"subject": "Issue 2", "message": "Second account"})
+    assert a.status_code == b.status_code == 200
+    assert client.get(f"/api/support-tickets/{a.json()['id']}",
+                      headers=auth(owner2)).status_code == 403
+    assert client.post(f"/api/support-tickets/{b.json()['id']}/messages",
+                       headers=auth(owner1),
+                       json={"message": "Cross account"}).status_code == 403
+    only_a = client.get("/api/support-tickets/my", headers=auth(owner1))
+    assert only_a.status_code == 200
+    assert a.json()["id"] in [x["id"] for x in only_a.json()]
+    assert b.json()["id"] not in [x["id"] for x in only_a.json()]
