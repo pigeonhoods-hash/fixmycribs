@@ -290,3 +290,162 @@ def test_declared_oversized_json_rejected(client):
         "Content-Length": str(3 * 1024 * 1024)
     }, json={"email": unique_email(), "password": "Wrong!123456"})
     assert response.status_code == 413, response.text
+
+
+# Round 3: authentication, verification-link, provider, and invitation tests.
+def test_registration_verification_and_single_use_link(client, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "send_email_dev", lambda **kw: sent.append(kw))
+    email = unique_email()
+    response = client.post("/api/auth/register", json={
+        "full_name": "Registration Test", "email": email, "password": "Testing!123456"})
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["role"] == "owner"
+    assert response.json()["user"]["email_verified"] is False
+    assert "dev_verification_link" not in response.json()
+    assert len(sent) == 1 and sent[0]["to"] == email
+    raw = sent[0]["link"].split("/verify-email/")[-1]
+    stored = client.portal.call(read_test_doc, "email_verification_tokens", {
+        "token_hash": server.sha256_token(raw)})
+    assert stored["status"] == "pending"
+    assert raw not in str(stored)
+    token = response.json()["token"]
+    denied = client.post("/api/properties", headers=auth(token), json={
+        "name": "Verification required", "type": "apartment", "address": "Test"})
+    assert denied.status_code == 403, denied.text
+    verified = client.post("/api/auth/verify-email", json={"token": raw})
+    assert verified.status_code == 200, verified.text
+    assert len(sent) == 2  # verification email + welcome
+    assert client.post("/api/auth/verify-email", json={"token": raw}).status_code == 400
+    assert len(sent) == 2  # welcome email must be sent at most once
+    assert client.get("/api/auth/me", headers=auth(token)).json()["email_verified"] is True
+
+
+def test_resend_supersedes_previous_verification_link(client, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "send_email_dev", lambda **kw: sent.append(kw))
+    response = client.post("/api/auth/register", json={
+        "full_name": "Resend Test", "email": unique_email(), "password": "Testing!123456"})
+    assert response.status_code == 200, response.text
+    first = sent[-1]["link"].split("/verify-email/")[-1]
+    token = response.json()["token"]
+    resend = client.post("/api/auth/resend-verification", headers=auth(token))
+    assert resend.status_code == 200, resend.text
+    second = sent[-1]["link"].split("/verify-email/")[-1]
+    assert first != second
+    assert client.post("/api/auth/verify-email", json={"token": first}).status_code == 400
+    assert client.post("/api/auth/verify-email", json={"token": second}).status_code == 200
+    assert client.post("/api/auth/resend-verification", headers=auth(token)).status_code == 429
+
+
+def test_password_reset_email_token_expiration_reuse_and_old_session(client, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "send_email_dev", lambda **kw: sent.append(kw))
+    email, old_password, old_token = register(client)
+    request = client.post("/api/auth/forgot-password", json={"email": email})
+    assert request.status_code == 200, request.text
+    raw = sent[-1]["link"].split("/reset-password/")[-1]
+    record = client.portal.call(read_test_doc, "password_reset_tokens",
+                                {"token_hash": server.sha256_token(raw)})
+    assert record["status"] == "pending"
+    assert raw not in str(record)
+    reset = client.post("/api/auth/reset-password", json={"token": raw, "password": "Changed!123456"})
+    assert reset.status_code == 200, reset.text
+    assert client.post("/api/auth/reset-password",
+                       json={"token": raw, "password": "ChangedAgain!123"}).status_code == 400
+    assert client.get("/api/auth/me", headers=auth(old_token)).status_code == 401
+    assert client.post("/api/auth/login", json={
+        "email": email, "password": old_password}).status_code == 401
+    assert client.post("/api/auth/login", json={
+        "email": email, "password": "Changed!123456"}).status_code == 200
+
+
+def test_expired_password_reset_link_rejected(client, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "send_email_dev", lambda **kw: sent.append(kw))
+    email, _, _ = register(client)
+    request = client.post("/api/auth/forgot-password", json={"email": email})
+    assert request.status_code == 200
+    raw = sent[-1]["link"].split("/reset-password/")[-1]
+    client.portal.call(expire_token, "password_reset_tokens", server.sha256_token(raw))
+    result = client.post("/api/auth/reset-password", json={
+        "token": raw, "password": "Changed!123456"})
+    assert result.status_code == 400
+
+
+async def expire_token(collection, token_hash):
+    from datetime import datetime, timezone, timedelta
+    await getattr(server.db, collection).update_one({"token_hash": token_hash},
+        {"$set": {"expires_at": (datetime.now(timezone.utc)-timedelta(days=2)).isoformat()}})
+
+
+def test_expired_verification_link_rejected(client, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "send_email_dev", lambda **kw: sent.append(kw))
+    response = client.post("/api/auth/register", json={
+        "full_name": "Expiry Test", "email": unique_email(), "password": "Testing!123456"})
+    assert response.status_code == 200
+    raw = sent[-1]["link"].split("/verify-email/")[-1]
+    client.portal.call(expire_token, "email_verification_tokens", server.sha256_token(raw))
+    result = client.post("/api/auth/verify-email", json={"token": raw})
+    assert result.status_code == 400
+
+
+def test_login_lockout_after_failed_attempts(client):
+    email, password, _ = register(client)
+    for attempt in range(server.MAX_LOGIN_ATTEMPTS):
+        result = client.post("/api/auth/login", json={
+            "email": email, "password": "incorrect!123"})
+        assert result.status_code == 401, (attempt, result.text)
+    correct = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert correct.status_code == 429, correct.text
+
+
+def test_password_strength_and_public_role_escalation(client):
+    weak = client.post("/api/auth/register", json={
+        "full_name": "Weak", "email": unique_email(), "password": "password"})
+    assert weak.status_code in (400, 422), weak.text
+    response = client.post("/api/auth/register", json={
+        "full_name": "Role Test", "email": unique_email(), "password": "Testing!123456",
+        "role": "admin", "email_verified": True, "plan": "pro"})
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["role"] == "owner"
+    assert response.json()["user"]["email_verified"] is False
+    assert response.json()["user"]["plan"] == "starter"
+
+
+def test_admin_email_endpoint_mocks_resend_acceptance_and_rejection(client, monkeypatch):
+    admin_id = client.portal.call(seed_role, "admin", unique_email())
+    admin_token = server.create_token(admin_id)
+    monkeypatch.setenv("RESEND_API_KEY", "ci_fake_only_do_not_use")
+    monkeypatch.setenv("EMAIL_FROM", "no-reply@example.com")
+    monkeypatch.setattr(server, "_resend_send_sync", lambda *args: "ci-provider-id")
+    accepted = client.post("/api/admin/email/test", headers=auth(admin_token))
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json().get("message_id") == "ci-provider-id"
+    _, _, owner = register(client)
+    assert client.post("/api/admin/email/test", headers=auth(owner)).status_code == 403
+    def reject(*args):
+        raise RuntimeError("Simulated provider rejection")
+    monkeypatch.setattr(server, "_resend_send_sync", reject)
+    rejected = client.post("/api/admin/email/test", headers=auth(admin_token))
+    assert rejected.status_code == 502, rejected.text
+    assert "Simulated" not in rejected.text  # no internal provider details
+
+
+def test_unconfigured_email_transport_advertised_as_unavailable(client, monkeypatch):
+    admin_id = client.portal.call(seed_role, "admin", unique_email())
+    admin_token = server.create_token(admin_id)
+    for name in ("RESEND_API_KEY", "EMAIL_FROM", "SMTP_HOST",
+                 "SMTP_USERNAME", "SMTP_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    unavailable = client.post("/api/admin/email/test", headers=auth(admin_token))
+    assert unavailable.status_code == 503, unavailable.text
+
+
+def test_email_template_escapes_user_supplied_html():
+    dangerous = '<img src=x onerror=alert(1)>'
+    email = server._html_email("Verify account", "Hello " + dangerous, "https://example.com/verify")
+    assert dangerous not in email
+    assert "&lt;img" in email
+
