@@ -54,4 +54,4 @@ jobs:
         run: python -m pip_audit --strict
       - name: Isolated authorization and session tests
         if: always()
-        run: python -m pytest -q tests/test_security_isolation.py
+        run: python -m pytest -n 0 -q tests/test_security_isolation.py
