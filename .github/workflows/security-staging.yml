@@ -1,0 +1,56 @@
+name: Security staging tests
+on:
+  push:
+    branches: [security/staging-integration-20261030]
+  pull_request:
+    paths:
+      - "app/backend/**"
+      - ".github/workflows/security-staging.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dependency-and-isolation:
+    runs-on: ubuntu-22.04
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    defaults:
+      run:
+        working-directory: app/backend
+    env:
+      MONGO_URL: mongodb://127.0.0.1:27017
+      DB_NAME: fixmycribs_security_ci
+      JWT_SECRET: ci-only-not-a-production-secret-please-never-reuse-2026
+      APP_ENV: production
+      FRONTEND_URL: https://example.invalid
+      CORS_ORIGINS: https://example.invalid
+      PAYMENT_PROVIDER: paystack
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: app/backend/requirements.txt
+      - name: Install runtime dependencies and test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install httpx pip-audit
+      - name: Validate imports and dependency compatibility
+        run: |
+          python -m compileall -q .
+          python -m pip check
+      - name: Audit dependencies
+        run: python -m pip_audit --strict
+      - name: Isolated authorization and session tests
+        run: python -m pytest -q tests/test_security_isolation.py
