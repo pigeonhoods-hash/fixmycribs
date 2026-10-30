@@ -5071,6 +5071,8 @@ async def fm_me(user=Depends(get_current_user)):
 @api_router.get("/facility-manager/complaints")
 async def fm_list_complaints(user=Depends(get_current_user)):
     fm, _ = await _get_fm_context(user)
+    if not fm.get("permissions", {}).get("view_complaints", True):
+        raise HTTPException(403, "You do not have permission to view complaints")
     items = await db.maintenance_complaints.find(
         {"owner_id": fm["owner_id"], "assigned_to_facility_manager_id": fm["id"]}, {"_id": 0}
     ).sort("created_at", -1).to_list(5000000)
@@ -5087,7 +5089,9 @@ async def fm_list_complaints(user=Depends(get_current_user)):
 @api_router.get("/facility-manager/complaints/{cid}")
 async def fm_get_complaint(cid: str, user=Depends(get_current_user)):
     fm, _ = await _get_fm_context(user)
-    c = await db.maintenance_complaints.find_one({"id": cid, "assigned_to_facility_manager_id": fm["id"]}, {"_id": 0})
+    if not fm.get("permissions", {}).get("view_complaints", True):
+        raise HTTPException(403, "You do not have permission to view complaints")
+    c = await db.maintenance_complaints.find_one({"id": cid, "owner_id": fm["owner_id"], "assigned_to_facility_manager_id": fm["id"]}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Not found")
     c["updates"] = await db.maintenance_updates.find({"complaint_id": cid}, {"_id": 0}).sort("created_at", 1).to_list(5000000)
@@ -5103,7 +5107,7 @@ async def fm_update_status(cid: str, data: ComplaintStatusIn, user=Depends(get_c
     fm, _ = await _get_fm_context(user)
     if not fm.get("permissions", {}).get("update_complaints", True):
         raise HTTPException(403, "You do not have permission to update complaints")
-    c = await db.maintenance_complaints.find_one({"id": cid, "assigned_to_facility_manager_id": fm["id"]})
+    c = await db.maintenance_complaints.find_one({"id": cid, "owner_id": fm["owner_id"], "assigned_to_facility_manager_id": fm["id"]})
     if not c:
         raise HTTPException(404, "Not found")
     valid = ["pending", "in_progress", "completed", "cannot_complete"]
@@ -5132,7 +5136,7 @@ async def fm_update_status(cid: str, data: ComplaintStatusIn, user=Depends(get_c
 @api_router.post("/facility-manager/complaints/{cid}/remarks")
 async def fm_add_remark(cid: str, data: ComplaintRemarkIn, user=Depends(get_current_user)):
     fm, _ = await _get_fm_context(user)
-    c = await db.maintenance_complaints.find_one({"id": cid, "assigned_to_facility_manager_id": fm["id"]})
+    c = await db.maintenance_complaints.find_one({"id": cid, "owner_id": fm["owner_id"], "assigned_to_facility_manager_id": fm["id"]})
     if not c:
         raise HTTPException(404, "Not found")
     await db.maintenance_updates.insert_one({
