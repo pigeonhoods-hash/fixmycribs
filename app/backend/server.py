@@ -1848,6 +1848,15 @@ async def update_tenant(tid: str, data: TenantUpdateIn, user=Depends(get_current
     updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
     if "email" in updates and updates["email"]:
         updates["email"] = updates["email"].lower()
+    if "property_id" in updates:
+        prop = await db.properties.find_one({"id": updates["property_id"], "user_id": user["id"]})
+        if not prop:
+            raise HTTPException(400, "Invalid property")
+    if "unit_id" in updates and updates["unit_id"]:
+        target_property_id = updates.get("property_id", existing["property_id"])
+        unit = await db.units.find_one({"id": updates["unit_id"], "property_id": target_property_id})
+        if not unit:
+            raise HTTPException(400, "Invalid unit for property")
     updates["updated_at"] = now_iso()
     await db.tenants.update_one({"id": tid, "user_id": user["id"]}, {"$set": updates})
     return {"ok": True}
@@ -2227,6 +2236,10 @@ async def create_payment(data: PaymentIn, user=Depends(get_current_user)):
     rec = await db.rent_records.find_one({"id": data.rent_record_id, "user_id": user["id"]})
     if not rec:
         raise HTTPException(400, "Invalid rent record")
+    if not 0 < data.amount < float("inf"):
+        raise HTTPException(400, "Payment amount must be positive and finite")
+    if data.tenant_id != rec["tenant_id"]:
+        raise HTTPException(400, "Payment tenant does not match the rent record")
     payment_date = data.payment_date or date.today().isoformat()
     doc = {
         "id": new_id(),
@@ -3045,11 +3058,10 @@ async def admin_reset_password(uid: str, data: AdminResetPasswordIn, user=Depend
     target = await db.users.find_one({"id": uid})
     if not target:
         raise HTTPException(404, "Not found")
-    await db.users.update_one({"id": uid}, {"$set": {
-        "password_hash": hash_password(data.new_password),
-        "must_change_password": False,
-        "updated_at": now_iso(),
-    }})
+    await db.users.update_one({"id": uid}, {
+        "$set": {"password_hash": hash_password(data.new_password), "must_change_password": False, "updated_at": now_iso()},
+        "$inc": {"auth_version": 1},
+    })
     await log_action(user, "admin_reset_password", "user", uid)
     return {"ok": True}
 
@@ -3889,6 +3901,9 @@ async def update_bill(bill_id: str, data: BillUpdateIn, user=Depends(get_current
     b = await db.utility_bills.find_one({"id": bill_id, "owner_id": user["id"]})
     if not b:
         raise HTTPException(404, "Not found")
+    for value in (data.amount_due, data.rate, data.previous_reading, data.current_reading):
+        if value is not None and not 0 <= value < float("inf"):
+            raise HTTPException(400, "Bill amounts and meter readings must be nonnegative and finite")
     upd: Dict[str, Any] = {}
     if data.title is not None: upd["title"] = data.title
     if data.description is not None: upd["description"] = data.description
@@ -3935,6 +3950,8 @@ async def record_bill_payment(bill_id: str, data: BillPaymentIn, user=Depends(ge
     b = await db.utility_bills.find_one({"id": bill_id, "owner_id": user["id"]})
     if not b:
         raise HTTPException(404, "Not found")
+    if not 0 < data.amount < float("inf"):
+        raise HTTPException(400, "Payment amount must be positive and finite")
     payment_date = data.payment_date or date.today().isoformat()
     pay = {
         "id": new_id(),
