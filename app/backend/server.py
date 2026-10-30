@@ -18,6 +18,8 @@ import secrets
 import re
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime, timezone, timedelta, date
 
@@ -31,12 +33,15 @@ media_bucket = AsyncIOMotorGridFSBucket(db, bucket_name="tenant_evidence")
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
-JWT_EXP_DAYS = 30
+JWT_EXP_DAYS = 7
+JWT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 APP_ENV = os.environ.get("APP_ENV", "development")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
-app = FastAPI(title="FixMyCribs API")
+app = FastAPI(title="FixMyCribs API", docs_url=None if APP_ENV == "production" else "/docs",
+                 redoc_url=None if APP_ENV == "production" else "/redoc",
+                 openapi_url=None if APP_ENV == "production" else "/openapi.json")
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
@@ -60,9 +65,10 @@ def verify_password(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_token(user_id: str) -> str:
+def create_token(user_id: str, auth_version: int = 0) -> str:
     payload = {
         "sub": user_id,
+        "ver": int(auth_version),
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXP_DAYS),
         "iat": datetime.now(timezone.utc),
     }
@@ -118,17 +124,31 @@ async def check_login_lockout(email: str):
 
 
 async def register_failed_login(email: str):
-    rec = await db.login_attempts.find_one({"email": email})
-    count = (rec.get("count", 0) if rec else 0) + 1
-    update = {"count": count, "updated_at": now_iso()}
-    if count >= MAX_LOGIN_ATTEMPTS:
-        update["locked_until"] = (datetime.now(timezone.utc) + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
-        update["count"] = 0
-    await db.login_attempts.update_one({"email": email}, {"$set": update}, upsert=True)
+    # A single atomic increment prevents concurrent guesses bypassing the counter.
+    rec = await db.login_attempts.find_one_and_update(
+        {"email": email}, {"$inc": {"count": 1}, "$set": {"updated_at": now_iso()}},
+        upsert=True, return_document=ReturnDocument.AFTER)
+    if rec.get("count", 0) >= MAX_LOGIN_ATTEMPTS:
+        await db.login_attempts.update_one(
+            {"email": email, "count": {"$gte": MAX_LOGIN_ATTEMPTS}},
+            {"$set": {"locked_until": (datetime.now(timezone.utc) + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat(), "count": 0}})
 
 
 async def clear_login_attempts(email: str):
     await db.login_attempts.delete_one({"email": email})
+
+
+async def throttle_sensitive_action(action: str, identifier: str, seconds: int):
+    """Mongo-backed per-identity cooldown shared across all server replicas."""
+    now = datetime.now(timezone.utc)
+    key = sha256_token(f"{action}:{identifier.casefold()}")
+    try:
+        await db.auth_throttles.find_one_and_update(
+            {"key": key, "$or": [{"until": {"$lte": now}}, {"until": {"$exists": False}}]},
+            {"$set": {"until": now + timedelta(seconds=seconds), "updated_at": now}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        raise HTTPException(429, "Too many requests. Please try again later.")
 
 
 async def _create_email_verification(user: dict) -> str:
@@ -167,6 +187,18 @@ async def _create_email_verification(user: dict) -> str:
     )
     return link
 
+def _validate_session_claims(payload: dict, user: dict):
+    # Legacy tokens without a version remain valid until the first password change.
+    if int(payload.get("ver", 0)) != int(user.get("auth_version", 0)):
+        raise HTTPException(401, "Session expired. Please sign in again.")
+    try:
+        age = datetime.now(timezone.utc).timestamp() - int(payload["iat"])
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(401, "Invalid session")
+    if age > JWT_MAX_AGE_SECONDS or age < -60:
+        raise HTTPException(401, "Session expired. Please sign in again.")
+
+
 def strip_private(doc: dict) -> dict:
     if not doc:
         return doc
@@ -186,6 +218,7 @@ async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(securit
     user = await db.users.find_one({"id": user_id})
     if not user:
         raise HTTPException(401, "User not found")
+    _validate_session_claims(payload, user)
     if user.get("account_status", "active") not in ("active",):
         # allow tenant/facility manager suspended to still call /auth/me but not other endpoints
         raise HTTPException(403, "Your account is not active. Contact support.")
@@ -205,6 +238,7 @@ async def get_current_user_soft(creds: HTTPAuthorizationCredentials = Depends(se
     user = await db.users.find_one({"id": user_id})
     if not user:
         raise HTTPException(401, "User not found")
+    _validate_session_claims(payload, user)
     return strip_private(user)
 
 
@@ -544,6 +578,9 @@ async def on_startup():
     try:
         await db.users.create_index("email", unique=True)
         await db.users.create_index("role")
+        await db.login_attempts.create_index("email", unique=True)
+        await db.auth_throttles.create_index("key", unique=True)
+        await db.auth_throttles.create_index("until", expireAfterSeconds=0)
         await db.users.create_index("owner_id")
         await db.users.create_index("tenant_id")
 
@@ -887,7 +924,7 @@ async def login(data: LoginIn):
     if user.get("account_status", "active") == "revoked":
         raise HTTPException(403, "Your access has been revoked. Contact your landlord or support.")
     await clear_login_attempts(email)
-    token = create_token(user["id"])
+    token = create_token(user["id"], user.get("auth_version", 0))
     return {"token": token, "user": strip_private(user)}
 
 @api_router.get("/auth/me")
@@ -937,6 +974,7 @@ async def verify_email(data: VerifyEmailIn):
 
 @api_router.post("/auth/resend-verification")
 async def resend_verification(user=Depends(get_current_user_soft)):
+    await throttle_sensitive_action("verify", user["id"], 120)
     if user.get("email_verified"):
         return {"ok": True, "message": "Email already verified"}
     full = await db.users.find_one({"id": user["id"]}, {"_id": 0})
@@ -949,6 +987,7 @@ async def resend_verification(user=Depends(get_current_user_soft)):
 @api_router.post("/auth/forgot-password")
 async def forgot_password(data: ForgotPasswordIn):
     email = data.email.lower()
+    await throttle_sensitive_action("password_reset", email, 90)
     user = await db.users.find_one({"email": email})
     generic_msg = {"ok": True, "message": "If this email exists, a reset link has been sent."}
     if not user or user.get("account_status") != "active":
@@ -1009,10 +1048,10 @@ async def reset_password(data: ResetPasswordIn):
     user = await db.users.find_one({"id": rec["user_id"]})
     if not user:
         raise HTTPException(400, "User not found")
-    await db.users.update_one({"id": user["id"]}, {"$set": {
-        "password_hash": hash_password(data.password),
-        "updated_at": now_iso(),
-    }})
+    await db.users.update_one({"id": user["id"]}, {
+        "$set": {"password_hash": hash_password(data.password), "updated_at": now_iso()},
+        "$inc": {"auth_version": 1},
+    })
     await db.password_reset_tokens.update_one({"id": rec["id"]}, {"$set": {"status": "used", "used_at": now_iso()}})
     await log_action(user, "password_reset", "user", user["id"])
     return {"ok": True, "message": "Password updated. You can now log in."}
@@ -1023,11 +1062,10 @@ async def change_password(data: ChangePasswordIn, user=Depends(get_current_user)
     stored = await db.users.find_one({"id": user["id"]})
     if not stored or not verify_password(data.current_password, stored["password_hash"]):
         raise HTTPException(400, "Current password is incorrect")
-    await db.users.update_one({"id": user["id"]}, {"$set": {
-        "password_hash": hash_password(data.new_password),
-        "must_change_password": False,
-        "updated_at": now_iso(),
-    }})
+    await db.users.update_one({"id": user["id"]}, {
+        "$set": {"password_hash": hash_password(data.new_password), "must_change_password": False, "updated_at": now_iso()},
+        "$inc": {"auth_version": 1},
+    })
     await log_action(user, "password_changed", "user", user["id"])
     return {"ok": True, "message": "Password updated"}
 
@@ -2068,6 +2106,8 @@ async def get_conversation(conversation_id: str, user=Depends(get_current_user))
         tenant, _ = await _get_tenant_context(user)
         if conv["tenant_id"] != tenant["id"]:
             raise HTTPException(403, "Forbidden")
+    elif user["role"] != "owner":
+        raise HTTPException(403, "Forbidden")
     msgs = await db.messages.find({"conversation_id": conversation_id}, {"_id": 0}).sort("created_at", 1).to_list(5000000)
     # Mark as read for the current viewer
     if user["role"] == "owner":
@@ -4428,6 +4468,8 @@ async def get_bill(bill_id: str, user=Depends(get_current_user)):
         raise HTTPException(403, "Forbidden")
     if user["role"] == "tenant" and b.get("tenant_user_id") != user["id"]:
         raise HTTPException(403, "Forbidden")
+    if user["role"] not in ("owner", "tenant"):
+        raise HTTPException(403, "Forbidden")
     b["payments"] = await db.bill_payments.find({"bill_id": bill_id}, {"_id": 0}).sort("payment_date", -1).to_list(5000000)
     return b
 
@@ -5134,6 +5176,7 @@ async def support_patch_ticket(tid: str, data: SupportTicketPatchIn, user=Depend
 @api_router.post("/admin/support-users")
 async def admin_create_support(data: AdminCreateUserIn, user=Depends(get_current_user)):
     require_roles(user, ["admin"])
+    validate_password_strength(data.password)
     if data.role not in ("support", "admin"):
         raise HTTPException(400, "Role must be support or admin")
     existing = await db.users.find_one({"email": data.email.lower()})
@@ -5188,7 +5231,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=[v.strip() for v in os.environ.get('CORS_ORIGINS', FRONTEND_URL).split(',') if v.strip() and v.strip() != '*'],
     allow_methods=["*"],
     allow_headers=["*"],
 )
