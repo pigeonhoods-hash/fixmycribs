@@ -32,7 +32,7 @@ def client():
 
 
 def unique_email():
-    return f"security-{uuid.uuid4().hex}@example.invalid"
+    return f"security-{uuid.uuid4().hex}@example.com"
 
 
 def register(client):
