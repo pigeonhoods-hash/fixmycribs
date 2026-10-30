@@ -9,7 +9,20 @@ assert os.environ.get("DB_NAME") == "fixmycribs_security_ci"
 assert os.environ.get("MONGO_URL") == "mongodb://127.0.0.1:27017"
 assert os.environ.get("APP_ENV") == "production"
 
+import server
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from server import app
+
+
+async def _isolated_mongo_lifespan_setup():
+    # Motor binds its client to the first active event loop; TestClient starts
+    # its own portal loop, so create our disposable client inside that loop.
+    server.client = AsyncIOMotorClient(os.environ['MONGO_URL'])
+    server.db = server.client[os.environ['DB_NAME']]
+    server.media_bucket = AsyncIOMotorGridFSBucket(server.db, bucket_name='tenant_evidence')
+
+
+app.router.on_startup.insert(0, _isolated_mongo_lifespan_setup)
 
 
 @pytest.fixture(scope="module")
