@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { useAuth, getDefaultDashboard } from "@/lib/auth";
 import { formatApiError } from "@/lib/password";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -47,8 +47,17 @@ export default function VerifyEmail() {
   };
 
   const goToApp = async () => {
-    try { await refreshUser(); } catch {}
-    nav("/dashboard");
+    try {
+      await refreshUser();
+      const { data } = await api.get("/auth/me");
+      if (data.role === "owner" && data.email_verified === false) {
+        toast.error("Your email is not verified yet. Use the resend button to request a new link.");
+        return;
+      }
+      nav(getDefaultDashboard(data));
+    } catch {
+      toast.error("Could not check verification status. Please try again.");
+    }
   };
 
   return (
