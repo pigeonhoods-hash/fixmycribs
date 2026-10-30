@@ -5243,6 +5243,17 @@ async def dashboard_extras(user=Depends(get_current_user)):
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    # Reject oversized declared bodies before parsing or allocating uploads.
+    # Includes multipart overhead above the 25 MB evidence-file limit.
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            byte_count = int(length)
+        except ValueError:
+            raise HTTPException(400, "Invalid Content-Length")
+        max_body = 27 * 1024 * 1024 if request.headers.get("content-type", "").lower().startswith("multipart/") else 2 * 1024 * 1024
+        if byte_count > max_body:
+            return Response("Request body too large", status_code=413, media_type="text/plain")
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
