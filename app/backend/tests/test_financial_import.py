@@ -11,7 +11,7 @@ class FinancialTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         fake=types.ModuleType('fastapi');fake.Body=lambda *a,**k:None;fake.Depends=lambda *a,**k:None;fake.HTTPException=HttpError
         self.previous=sys.modules.get('fastapi');sys.modules['fastapi']=fake
-        self.db=types.SimpleNamespace(**{k:EditableCollection() for k in ['properties','tenants','imported_receipts','financial_import_entries','financial_imports','financial_import_backups','rent_records','payments','utility_bills','bill_payments']})
+        self.db=types.SimpleNamespace(**{k:EditableCollection() for k in ['properties','tenants','imported_receipts','financial_import_entries','financial_imports','financial_import_backups','rent_records','payments','utility_bills','bill_payments','maintenance_complaints','conversations','tenant_invites','messages','payment_reports','users']})
         self.db.properties.rows=[{'id':'p','user_id':'o','name':'Property'}]
         self.db.tenants.rows=[{'id':'t','user_id':'o','property_id':'p','full_name':'Current','apartment_number':'1A','status':'active'}]
         self.db.imported_receipts.rows=[{'receipt_key':'sheet','owner_id':'o','property_id':'p'}]
@@ -48,6 +48,17 @@ class FinancialTests(unittest.IsolatedAsyncioTestCase):
         await self.call(False)
         self.assertFalse(any(r.get('id')=='old' for r in self.db.rent_records.rows));self.assertTrue(any(r.get('id')=='manual' for r in self.db.rent_records.rows))
         self.assertEqual(len(self.db.financial_import_backups.rows),1)
+    async def test_replacement_removes_only_empty_stale_source_profiles_after_backup(self):
+        stale={'id':'stale','user_id':'o','property_id':'p','full_name':'Old Alias','status':'archived','tenant_user_id':None,'invite_status':'not_sent','archive_reason':'Historical source profile; current occupancy not confirmed'}
+        protected={**stale,'id':'protected','full_name':'Protected Alias'}
+        self.db.tenants.rows.extend([stale,protected])
+        self.db.utility_bills.rows=[{'id':'old-stale','owner_id':'o','tenant_id':'stale','source_import':True,'financial_import_version':'old'},{'id':'manual-protected','owner_id':'o','tenant_id':'protected','amount_due':9}]
+        self.data.update(version='complete-v2',replace_previous=True)
+        preview=await self.call();self.assertEqual(preview['stale_source_profiles_to_remove'],1)
+        result=await self.call(False)
+        self.assertEqual(result['stale_source_profiles_removed'],1)
+        self.assertFalse(any(t.get('id')=='stale' for t in self.db.tenants.rows));self.assertTrue(any(t.get('id')=='protected' for t in self.db.tenants.rows))
+        self.assertEqual(self.db.financial_import_backups.rows[0]['tenant_profiles'][0]['id'],'stale')
     async def test_cross_owner_cannot_post(self):
         with self.assertRaises(HttpError):await self.call(False,{'id':'other','role':'owner'})
         self.assertFalse(self.db.financial_imports.rows)

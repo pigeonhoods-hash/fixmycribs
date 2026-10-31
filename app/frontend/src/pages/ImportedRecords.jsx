@@ -58,7 +58,7 @@ export default function ImportedRecords() {
     setBusy(true); setError("");
     try {
       const r = await api.post(`/financial-source-import?dry_run=${!commit}`, financialPayload);
-      if (commit) { setMessage(`Posted ${r.data.entries_to_add} complete financial entries and replaced ${r.data.previous_entries_replaced || 0} incomplete source entries from the backed-up prior batch. ${r.data.already_posted} already posted. No invitations sent.`); setFinancialPreview(null); await load(); }
+      if (commit) { setMessage(`Posted ${r.data.entries_to_add} complete financial entries, replaced ${r.data.previous_entries_replaced || 0} prior source entries, and removed ${r.data.stale_source_profiles_removed || 0} empty duplicate source profiles after backup. ${r.data.already_posted} already posted. No invitations sent.`); setFinancialPreview(null); await load(); }
       else setFinancialPreview(r.data);
     } catch(e) { setError(String(e.response?.data?.detail || e.message)); setFinancialPreview(null); }
     finally { setBusy(false); }
@@ -103,6 +103,7 @@ export default function ImportedRecords() {
       {financialPreview && <div role="status" className="text-sm space-y-1">
         <p>Financial preview: {financialPreview.entries_to_add} entries, {financialPreview.historical_profiles_to_add} historical profiles, {financialPreview.already_posted} already posted.</p>
         <p>{financialPreview.previous_entries_to_replace || 0} earlier source entries and {financialPreview.previous_payments_to_replace || 0} earlier source payments will be replaced after backup.</p>
+        <p>{financialPreview.stale_source_profiles_to_remove || 0} empty duplicate source profiles will also be backed up and removed; profiles with manual records or activity are preserved.</p>
         <p>Rent: {amount(financialPreview.totals.rent_due)} expected; {amount(financialPreview.totals.rent_paid)} paid.</p>
         <p>Fees and utilities: {amount(financialPreview.totals.bills_due)} expected; {amount(financialPreview.totals.bills_paid)} paid.</p>
         <p>Recorded credits: {amount(financialPreview.totals.credits || 0)}.</p>

@@ -211,11 +211,42 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
         old_bills = await db.utility_bills.find(old_filter, {'_id': 0}).to_list(10000) if replace else []
         old_bill_payments = await db.bill_payments.find(old_filter, {'_id': 0}).to_list(10000) if replace else []
         old_markers = await db.financial_import_entries.find({'owner_id': owner, 'version': {'$ne': version}}, {'_id': 0}).to_list(10000) if replace else []
+        source_history = await db.tenants.find(
+            {'user_id': owner, 'archive_reason': 'Historical source profile; current occupancy not confirmed'},
+            {'_id': 0},
+        ).to_list(10000)
+        prospective_tenant_ids = {document['tenant_id'] for _, document, _, _ in pending}
+        stale_source_profiles = []
+        if replace:
+            financial_collections = ('rent_records', 'payments', 'utility_bills', 'bill_payments')
+            activity_collections = ('maintenance_complaints', 'conversations', 'tenant_invites', 'messages', 'payment_reports', 'users')
+            for tenant in source_history:
+                tenant_id = tenant['id']
+                if tenant_id in prospective_tenant_ids or tenant.get('tenant_user_id') or tenant.get('invite_status') not in (None, 'not_sent'):
+                    continue
+                # Old source-import rows are about to be replaced. Preserve a
+                # profile whenever it has any native/manual finance or other
+                # user activity; only empty importer-created shells are stale.
+                has_activity = False
+                for collection_name in financial_collections:
+                    collection = getattr(db, collection_name)
+                    if await collection.find_one({'tenant_id': tenant_id, 'source_import': {'$ne': True}}):
+                        has_activity = True
+                        break
+                if not has_activity:
+                    for collection_name in activity_collections:
+                        collection = getattr(db, collection_name, None)
+                        if collection is not None and await collection.find_one({'tenant_id': tenant_id}):
+                            has_activity = True
+                            break
+                if not has_activity:
+                    stale_source_profiles.append(tenant)
         result = {
             'dry_run': dry_run, 'version': version, 'entries_to_add': len(pending),
             'historical_profiles_to_add': len(new_people), 'profiles_to_update': len(updates),
             'already_posted': skipped, 'previous_entries_to_replace': len(old_rent) + len(old_bills),
             'previous_payments_to_replace': len(old_payments) + len(old_bill_payments),
+            'stale_source_profiles_to_remove': len(stale_source_profiles),
             'totals': {key: round(value, 2) for key, value in totals.items()},
             'notifications_sent': 0,
         }
@@ -259,7 +290,7 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
         # Replacement is recoverable: snapshot the exact prior source-import
         # documents before removing them from the live ledgers. Manual/native
         # financial records are never selected by this filter.
-        if replace and (old_rent or old_payments or old_bills or old_bill_payments or old_markers):
+        if replace and (old_rent or old_payments or old_bills or old_bill_payments or old_markers or stale_source_profiles):
             backup_id = stable_id(owner, 'financial-backup:' + version)
             await db.financial_import_backups.update_one(
                 {'_id': backup_id},
@@ -267,7 +298,7 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
                     'owner_id': owner, 'replacement_version': version, 'created_at': now_iso(),
                     'rent_records': old_rent, 'payments': old_payments,
                     'utility_bills': old_bills, 'bill_payments': old_bill_payments,
-                    'markers': old_markers,
+                    'markers': old_markers, 'tenant_profiles': stale_source_profiles,
                 }},
                 upsert=True,
             )
@@ -276,8 +307,16 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
             await db.utility_bills.delete_many(old_filter)
             await db.bill_payments.delete_many(old_filter)
             await db.financial_import_entries.delete_many({'owner_id': owner, 'version': {'$ne': version}})
+        removed_profiles = 0
+        for tenant in stale_source_profiles:
+            deleted = await db.tenants.delete_many({
+                'id': tenant['id'], 'user_id': owner,
+                'archive_reason': 'Historical source profile; current occupancy not confirmed',
+            })
+            removed_profiles += getattr(deleted, 'deleted_count', 0)
         result['previous_entries_replaced'] = len(old_rent) + len(old_bills)
         result['previous_payments_replaced'] = len(old_payments) + len(old_bill_payments)
+        result['stale_source_profiles_removed'] = removed_profiles
 
         source_history = await db.tenants.find(
             {'user_id': owner, 'archive_reason': 'Historical source profile; current occupancy not confirmed'},
