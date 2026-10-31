@@ -15,6 +15,9 @@ class EditableCollection(Collection):
                 row.update(copy.deepcopy(change.get('$set', {})))
                 return
         if upsert: self.rows.append({**query, **copy.deepcopy(change.get('$setOnInsert', {}))})
+    async def delete_many(self, query):
+        before=len(self.rows);self.rows[:]=[row for row in self.rows if not self.matches(row,query)]
+        return types.SimpleNamespace(deleted_count=before-len(self.rows))
 
 
 class Router:

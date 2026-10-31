@@ -116,10 +116,17 @@ def register_portfolio_import(router, db, current_user, require_roles, effective
         limit = cfg.get('limits', {}).get('properties', 0)
         if limit >= 0 and len(existing) + len(new_props) > limit:
             raise HTTPException(403, 'Property allowance is insufficient')
-        docs, skipped = [], 0
+        docs, skipped, source_property_links = [], 0, []
         for row in payload['receipts']:
             rid = stable_id(user['id'], payload['source'] + ':' + row['receipt_key'])
-            if await db.imported_receipts.find_one({'_id': rid, 'owner_id': user['id']}):
+            existing_source = await db.imported_receipts.find_one({'_id': rid, 'owner_id': user['id']})
+            if existing_source:
+                # A source row may initially have been imported before its
+                # estate heading was reconciled. Only fill a missing property;
+                # never move a row that already belongs to a property.
+                resolved_pid = prop_ids.get(row['property_key'])
+                if not existing_source.get('property_id') and resolved_pid:
+                    source_property_links.append((rid, resolved_pid, row['property_key']))
                 skipped += 1
                 continue
             docs.append({'id': rid, 'owner_id': user['id'], 'property_id': prop_ids.get(row['property_key']), 'source': payload['source'], **row, 'source_original': row, 'review_status': 'imported', 'created_at': now_iso(), 'updated_at': now_iso()})
@@ -134,7 +141,7 @@ def register_portfolio_import(router, db, current_user, require_roles, effective
         tenant_limit = cfg.get('limits', {}).get('tenants', 0)
         if tenant_limit >= 0 and tenant_count + len(new_people) > tenant_limit:
             raise HTTPException(403, 'Tenant allowance is insufficient')
-        result = {'dry_run': dry_run, 'properties_to_add': len(new_props), 'occupants_to_add': len(new_people), 'receipts_to_add': len(docs), 'already_imported': skipped, 'properties': [p['name'] for p in new_props], 'notifications_sent': 0, 'new_charges_created': 0}
+        result = {'dry_run': dry_run, 'properties_to_add': len(new_props), 'occupants_to_add': len(new_people), 'receipts_to_add': len(docs), 'source_property_links_to_add': len(source_property_links), 'already_imported': skipped, 'properties': [p['name'] for p in new_props], 'notifications_sent': 0, 'new_charges_created': 0}
         if dry_run:
             return result
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -143,6 +150,11 @@ def register_portfolio_import(router, db, current_user, require_roles, effective
             await db.properties.update_one({'_id': doc['id']}, {'$setOnInsert': doc}, upsert=True)
         for doc in docs:
             await db.imported_receipts.update_one({'_id': doc['id']}, {'$setOnInsert': doc}, upsert=True)
+        for rid, pid, property_key in source_property_links:
+            await db.imported_receipts.update_one(
+                {'_id': rid, 'owner_id': user['id'], 'property_id': None},
+                {'$set': {'property_id': pid, 'property_key': property_key, 'property_assignment_reconciled_at': now_iso()}},
+            )
         for doc in new_people:
             await db.tenants.update_one({'_id': doc['id']}, {'$setOnInsert': doc}, upsert=True)
         return result
