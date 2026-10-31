@@ -139,7 +139,8 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
             unit = entry.get('target_unit', '')
             matches = active_matches(property_id, name, unit) if not entry.get('historical') else historical_matches(property_id, name, unit)
             if len(matches) > 1:
-                raise HTTPException(400, 'Ambiguous tenant: specify apartment')
+                location = entry['property_name'] + ((' / ' + unit) if unit else '')
+                raise HTTPException(400, 'Ambiguous tenant: ' + name + ' at ' + location + '; specify apartment')
             if matches:
                 tenant = matches[0]
             elif not entry.get('historical'):
