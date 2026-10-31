@@ -121,8 +121,11 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
             property_id = by_prop.get(entry['property_name'].casefold())
             if not property_id:
                 raise HTTPException(400, 'Unknown owned property: ' + entry['property_name'])
-            if any(not source_is_valid(key, property_id) for key in entry['source_keys']):
-                raise HTTPException(400, 'Source does not belong to this property')
+            invalid_source = next((key for key in entry['source_keys'] if not source_is_valid(key, property_id)), None)
+            if invalid_source:
+                # The caller is the owning landlord and needs the exact editable
+                # source row to repair a legacy property assignment safely.
+                raise HTTPException(400, 'Source is missing or linked to another property: ' + invalid_source)
             marker = stable_id(owner, f'financial-entry:{version}:{entry["key"]}')
             if await db.financial_import_entries.find_one({'_id': marker, 'owner_id': owner}):
                 skipped += 1
