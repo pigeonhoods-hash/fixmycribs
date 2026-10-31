@@ -111,11 +111,16 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
             source = by_source.get(source_key)
             return bool(source and source.get('property_id') in (None, property_id))
 
+        def identity_name(value):
+            # Treat harmless spreadsheet spacing differences as the same
+            # identity while preserving the unit/property ambiguity checks.
+            return ' '.join(str(value or '').split()).casefold()
+
         def active_matches(property_id, name, unit):
-            return [t for t in people if t['property_id'] == property_id and t.get('status') != 'archived' and t['full_name'].casefold() == name.casefold() and (not unit or t.get('apartment_number') == unit)]
+            return [t for t in people if t['property_id'] == property_id and t.get('status') != 'archived' and identity_name(t['full_name']) == identity_name(name) and (not unit or t.get('apartment_number') == unit)]
 
         def historical_matches(property_id, name, unit):
-            return [t for t in people if t['property_id'] == property_id and t.get('status') == 'archived' and t['full_name'].casefold() == name.casefold() and (not unit or t.get('apartment_number') in (unit, 'Not stated in source', None, ''))]
+            return [t for t in people if t['property_id'] == property_id and t.get('status') == 'archived' and identity_name(t['full_name']) == identity_name(name) and (not unit or t.get('apartment_number') in (unit, 'Not stated in source', None, ''))]
 
         for entry in payload['entries']:
             property_id = by_prop.get(entry['property_name'].casefold())

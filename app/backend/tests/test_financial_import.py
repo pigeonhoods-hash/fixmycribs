@@ -58,6 +58,11 @@ class FinancialTests(unittest.IsolatedAsyncioTestCase):
     async def test_ambiguous_name_requires_unit(self):
         self.db.tenants.rows.append({**self.db.tenants.rows[0],'id':'t2','apartment_number':'1B'});self.data['entries'][0]['target_unit']=''
         with self.assertRaises(HttpError):await self.call(False)
+    async def test_harmless_name_spacing_matches_current_tenant(self):
+        self.db.tenants.rows[0]['full_name']='Current  Tenant'
+        self.data['entries'][0].update(tenant_name='Current Tenant',target_name='Current Tenant')
+        await self.call(False)
+        self.assertEqual(len(self.db.rent_records.rows),1)
     async def test_missing_current_match_never_creates_profile(self):
         self.data['entries'][0]['target_name']='Missing'
         with self.assertRaises(HttpError):await self.call(False)
