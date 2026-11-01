@@ -69,6 +69,14 @@ class FinancialTests(unittest.IsolatedAsyncioTestCase):
     async def test_ambiguous_name_requires_unit(self):
         self.db.tenants.rows.append({**self.db.tenants.rows[0],'id':'t2','apartment_number':'1B'});self.data['entries'][0]['target_unit']=''
         with self.assertRaises(HttpError):await self.call(False)
+    async def test_historical_exact_unit_wins_over_unspecified_shell(self):
+        self.db.tenants.rows.extend([
+            {'id':'past-unspecified','user_id':'o','property_id':'p','full_name':'Past Tenant','apartment_number':'Not stated in source','status':'archived'},
+            {'id':'past-exact','user_id':'o','property_id':'p','full_name':'Past Tenant','apartment_number':'2B','status':'archived'},
+        ])
+        self.data['entries'][0].update(tenant_name='Past Tenant',target_name='',target_unit='2B',historical=True)
+        await self.call(False)
+        self.assertEqual(self.db.rent_records.rows[0]['tenant_id'],'past-exact')
     async def test_harmless_name_spacing_matches_current_tenant(self):
         self.db.tenants.rows[0]['full_name']='Current  Tenant'
         self.data['entries'][0].update(tenant_name='Current Tenant',target_name='Current Tenant')
