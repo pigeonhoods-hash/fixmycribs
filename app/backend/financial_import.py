@@ -120,7 +120,13 @@ def register_financial_import(router, db, current_user, require_roles, now_iso, 
             return [t for t in people if t['property_id'] == property_id and t.get('status') != 'archived' and identity_name(t['full_name']) == identity_name(name) and (not unit or t.get('apartment_number') == unit)]
 
         def historical_matches(property_id, name, unit):
-            return [t for t in people if t['property_id'] == property_id and t.get('status') == 'archived' and identity_name(t['full_name']) == identity_name(name) and (not unit or t.get('apartment_number') in (unit, 'Not stated in source', None, ''))]
+            candidates = [t for t in people if t['property_id'] == property_id and t.get('status') == 'archived' and identity_name(t['full_name']) == identity_name(name)]
+            if not unit:
+                return candidates
+            exact = [t for t in candidates if t.get('apartment_number') == unit]
+            if exact:
+                return exact
+            return [t for t in candidates if t.get('apartment_number') in ('Not stated in source', None, '')]
 
         for entry in payload['entries']:
             property_id = by_prop.get(entry['property_name'].casefold())
