@@ -8,7 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Home, Pencil, Plus, Search } from "lucide-react";
+import { Pencil, Plus, Search } from "lucide-react";
+import TenantQuickEdit from "@/components/TenantQuickEdit";
 import { formatNaira } from "@/lib/format";
 
 const initial = { unit_name: "", unit_number: "", rent_amount: "", rent_frequency: "monthly", status: "vacant" };
@@ -21,6 +22,7 @@ export default function UnitManager({ property, onUpdated }) {
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
+  const [editingLegacyTenant, setEditingLegacyTenant] = useState(null);
 
   const edit = (unit = null) => {
     setEditing(unit);
@@ -54,13 +56,25 @@ export default function UnitManager({ property, onUpdated }) {
       toast.error(error.response?.data?.detail || "Could not save apartment");
     } finally { setSaving(false); }
   };
-  const units = (property.units || []).map(unit => {
+  const normalized = value => String(value || "").trim().toLowerCase();
+  const activeTenants = (property.tenants || []).filter(t => t.status === "active");
+  const registeredUnits = (property.units || []).map(unit => {
     const name = unit.unit_number || unit.unit_name || "";
-    const occupant = (property.tenants || []).find(t => t.status === "active" &&
-      (t.unit_id === unit.id || (!t.unit_id && t.apartment_number?.toLowerCase() === name.toLowerCase())));
-    return { ...unit, displayName: name, occupant };
-  }).filter(unit => !search.trim() || [unit.displayName, unit.unit_name, unit.occupant?.full_name]
-    .some(value => String(value || "").toLowerCase().includes(search.trim().toLowerCase())));
+    const occupant = activeTenants.find(t => t.unit_id === unit.id ||
+      (!t.unit_id && normalized(t.apartment_number) === normalized(name)));
+    return { ...unit, displayName: name, occupant, legacy: false };
+  });
+  const missing = activeTenants.filter(t => t.apartment_number && !registeredUnits.some(unit =>
+    (t.unit_id && t.unit_id === unit.id) ||
+    (!t.unit_id && normalized(t.apartment_number) === normalized(unit.displayName))));
+  const legacy = missing.map(t => ({
+    id: "legacy-" + t.id, unit_name: t.apartment_number,
+    displayName: t.apartment_number, status: "occupied", rent_amount: t.rent_amount,
+    occupant: t, legacy: true,
+  }));
+  const visibleUnits = [...registeredUnits, ...legacy].filter(unit =>
+    !search.trim() || [unit.displayName, unit.unit_name, unit.occupant?.full_name]
+      .some(value => normalized(value).includes(normalized(search))));
 
   return (
     <>
@@ -77,17 +91,19 @@ export default function UnitManager({ property, onUpdated }) {
         <div className="overflow-x-auto mt-3">
           <table className="w-full text-sm text-left">
             <thead><tr><th className="p-2">Apartment</th><th className="p-2">Status</th><th className="p-2">Occupant</th><th className="p-2">Rent</th><th className="p-2 text-right">Action</th></tr></thead>
-            <tbody>{units.map(unit => (
+            <tbody>{visibleUnits.map(unit => (
               <tr key={unit.id} className="border-t">
                 <td className="p-2">{unit.displayName}</td><td className="p-2 capitalize">{unit.status || "vacant"}</td>
                 <td className="p-2">{unit.occupant ? <Link to={"/dashboard/tenants/" + unit.occupant.id} className="text-emerald-700 hover:underline">{unit.occupant.full_name}</Link> : "—"}</td>
                 <td className="p-2">{unit.rent_amount == null ? "Not set" : formatNaira(unit.rent_amount)}</td>
-                <td className="p-2 text-right"><Button size="sm" variant="outline" onClick={() => edit(unit)} data-testid={"edit-unit-" + unit.id}><Pencil className="w-3.5 h-3.5 mr-1" /> Edit</Button></td>
+                <td className="p-2 text-right"><Button size="sm" variant="outline" onClick={() => unit.legacy ? setEditingLegacyTenant(unit.occupant) : edit(unit)} data-testid={"edit-unit-" + unit.id}><Pencil className="w-3.5 h-3.5 mr-1" /> Edit</Button></td>
               </tr>))}</tbody>
           </table>
-          {units.length === 0 && <p className="py-4 text-center text-slate-500 text-sm">No apartments found.</p>}
+          {visibleUnits.length === 0 && <p className="py-4 text-center text-slate-500 text-sm">No apartments found.</p>}
+          {legacy.length > 0 && <p className="text-xs text-slate-500 pt-3">Imported apartments without a unit record are edited through their tenant profiles; no duplicate units will be created.</p>}
         </div>
       </Card>
+      <TenantQuickEdit tenant={editingLegacyTenant} open={!!editingLegacyTenant} onOpenChange={value => { if (!value) setEditingLegacyTenant(null); }} onSaved={onUpdated} />
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>{editing ? "Edit apartment" : "Add apartment"}</DialogTitle></DialogHeader>
