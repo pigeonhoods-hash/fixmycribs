@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { ArrowLeft, Plus, Trash2, Pencil, Check, RotateCcw, Wallet } from "lucide-react";
 import { formatNaira, formatDate, todayISO } from "@/lib/format";
+import ApartmentEditDialog from "@/components/ApartmentEditDialog";
 
 const BILL_TYPES = [
   { key: "electricity_postpaid", label: "Electricity" },
@@ -205,6 +206,7 @@ export default function ApartmentDetail() {
           <p className="text-slate-500 mt-1">{tenant.full_name} · {tenant.property?.name || "-"}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ApartmentEditDialog tenant={tenant} onUpdated={load} />
           <Button onClick={() => { setBt("electricity_postpaid"); setBillOpen(true); }} variant="outline" data-testid="apt-add-electricity"><Plus className="w-4 h-4 mr-1.5" /> Electricity</Button>
           <Button onClick={() => { setBt("diesel_deposit"); setBillOpen(true); }} variant="outline" data-testid="apt-add-diesel"><Plus className="w-4 h-4 mr-1.5" /> Diesel</Button>
           <Button onClick={() => { setBt("service_charge"); setBillOpen(true); }} data-testid="apt-add-service" className="bg-blue-600 hover:bg-blue-700 text-white"><Plus className="w-4 h-4 mr-1.5" /> Service charge</Button>
