@@ -13,6 +13,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 const groups = [
   { label: "Overview", to: "/dashboard", icon: LayoutDashboard, exact: true },
   { label: "Properties", to: "/dashboard/properties", icon: Building2 },
+  { label: "Apartments", to: "/dashboard/apartments", icon: Building2 },
   { label: "Tenants", icon: Users, children: [
     { label: "Current tenants", to: "/dashboard/tenants", icon: UsersRound },
     { label: "Past tenants", to: "/dashboard/past-tenants", icon: Archive },
