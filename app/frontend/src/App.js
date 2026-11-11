@@ -17,6 +17,8 @@ import FeatureGate from "@/components/FeatureGate";
 import DashboardHome from "@/pages/DashboardHome";
 import Properties from "@/pages/Properties";
 import PropertyDetail from "@/pages/PropertyDetail";
+import Apartments from "@/pages/Apartments";
+import ApartmentDetail from "@/pages/ApartmentDetail";
 import ImportedRecords from "@/pages/ImportedRecords";
 import Tenants from "@/pages/Tenants";
 import TenantDetail from "@/pages/TenantDetail";
@@ -96,6 +98,8 @@ function App() {
             <Route index element={<DashboardHome />} />
             <Route path="properties" element={<Properties />} />
             <Route path="properties/:id" element={<PropertyDetail />} />
+            <Route path="apartments" element={<Apartments />} />
+            <Route path="apartments/:tenantId" element={<ApartmentDetail />} />
             <Route path="imported-records" element={<ImportedRecords />} />
             <Route path="tenants" element={<Tenants />} />
             <Route path="tenants/:id" element={<TenantDetail />} />
