@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Wallet, Bell, CheckCircle2, Copy, Trash2, RotateCcw, Check } from "lucide-react";
 import { formatNaira, formatDate } from "@/lib/format";
 import StatusBadge from "@/components/StatusBadge";
+import ApartmentEditDialog from "@/components/ApartmentEditDialog";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ConfirmDialog";
 
@@ -151,6 +152,7 @@ export default function TenantDetail() {
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end"><ApartmentEditDialog tenant={tenant} onUpdated={load} /></div>
       <Link to="/dashboard/tenants" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
         <ArrowLeft className="w-4 h-4" /> Back to tenants
       </Link>
