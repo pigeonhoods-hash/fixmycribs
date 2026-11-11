@@ -16,6 +16,7 @@ import bcrypt
 import hashlib
 import secrets
 import re
+import math
 from html import escape as html_escape
 from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field
@@ -828,6 +829,13 @@ class UnitIn(BaseModel):
     rent_frequency: str = "monthly"
     status: str = "vacant"
 
+class UnitUpdateIn(BaseModel):
+    unit_name: Optional[str] = None
+    unit_number: Optional[str] = None
+    rent_amount: Optional[float] = None
+    rent_frequency: Optional[str] = None
+    status: Optional[str] = None
+
 class TenantIn(BaseModel):
     full_name: str
     email: Optional[str] = ""
@@ -1460,20 +1468,92 @@ async def delete_property(pid: str, user=Depends(get_current_user)):
 
 
 # ---------------- UNITS ----------------
+UNIT_STATUSES = {"vacant", "occupied", "maintenance", "unavailable"}
+UNIT_FREQUENCIES = {"monthly", "quarterly", "bi_annually", "yearly"}
+
+
+def validate_unit_fields(fields: dict) -> dict:
+    """Validate only supplied unit fields; never rewrite rent or payment ledgers."""
+    fields = dict(fields)
+    for key in ("unit_name", "unit_number"):
+        if key in fields:
+            if fields[key] is None and key == "unit_number":
+                fields[key] = ""
+            elif not isinstance(fields[key], str):
+                raise HTTPException(400, f"Invalid {key}")
+            else:
+                fields[key] = fields[key].strip()
+            if len(fields[key]) > 150 or (key == "unit_name" and not fields[key]):
+                raise HTTPException(400, f"Invalid {key}")
+    if "rent_amount" in fields and fields["rent_amount"] is not None:
+        if not math.isfinite(fields["rent_amount"]) or fields["rent_amount"] < 0:
+            raise HTTPException(400, "Rent amount must be a non-negative number")
+    if "rent_frequency" in fields and fields["rent_frequency"] is not None:
+        if fields["rent_frequency"] not in UNIT_FREQUENCIES:
+            raise HTTPException(400, "Invalid rent frequency")
+    if "status" in fields and fields["status"] not in UNIT_STATUSES:
+        raise HTTPException(400, "Invalid apartment status")
+    return fields
+
+
+async def check_unique_unit_label(pid: str, label: str, exclude_id: Optional[str] = None):
+    if not label:
+        return
+    rx = {"$regex": f"^{re.escape(label)}$", "$options": "i"}
+    query = {"property_id": pid, "$or": [{"unit_number": rx}, {"unit_name": rx}]}
+    if exclude_id:
+        query["id"] = {"$ne": exclude_id}
+    if await db.units.find_one(query, {"_id": 0, "id": 1}):
+        raise HTTPException(409, "An apartment with this unit number/name already exists in this property")
+
+
 @api_router.post("/properties/{pid}/units")
 async def create_unit(pid: str, data: UnitIn, user=Depends(get_current_user)):
     require_roles(user, ["owner"])
     p = await db.properties.find_one({"id": pid, "user_id": user["id"]})
     if not p:
         raise HTTPException(404, "Property not found")
-    doc = {"id": new_id(), "property_id": pid, **data.model_dump(), "created_at": now_iso()}
+    fields = validate_unit_fields(data.model_dump())
+    await check_unique_unit_label(pid, fields.get("unit_number") or fields["unit_name"])
+    doc = {"id": new_id(), "property_id": pid, **fields, "created_at": now_iso(), "updated_at": now_iso()}
     await db.units.insert_one(doc)
     return strip_private(doc)
+
 
 @api_router.get("/properties/{pid}/units")
 async def list_units(pid: str, user=Depends(get_current_user)):
     require_roles(user, ["owner"])
+    if not await db.properties.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Property not found")
     return await db.units.find({"property_id": pid}, {"_id": 0}).to_list(5000000)
+
+
+@api_router.patch("/units/{uid}")
+async def update_unit(uid: str, data: UnitUpdateIn, user=Depends(get_current_user)):
+    require_roles(user, ["owner"])
+    unit = await db.units.find_one({"id": uid}, {"_id": 0})
+    if not unit or not await db.properties.find_one({"id": unit["property_id"], "user_id": user["id"]}, {"_id": 0, "id": 1}):
+        raise HTTPException(404, "Apartment not found")
+    updates = validate_unit_fields(data.model_dump(exclude_unset=True))
+    if not updates:
+        return {"ok": True}
+    current_label = unit.get("unit_number") or unit.get("unit_name") or ""
+    new_label = updates.get("unit_number", unit.get("unit_number")) or updates.get("unit_name", unit.get("unit_name")) or ""
+    await check_unique_unit_label(unit["property_id"], new_label, uid)
+    if updates.get("status") == "vacant" and unit.get("status") != "vacant":
+        matching_names = [name for name in {current_label, new_label} if name]
+        candidates = [{"unit_id": uid}] + [{"apartment_number": {"$regex": f"^{re.escape(name)}$", "$options": "i"}} for name in matching_names]
+        occupied = await db.tenants.find_one({"user_id": user["id"], "property_id": unit["property_id"], "status": "active", "$or": candidates}, {"_id": 0, "id": 1})
+        if occupied:
+            raise HTTPException(409, "This apartment has an active tenant. Update the tenant occupancy before marking it vacant.")
+    updates["updated_at"] = now_iso()
+    await db.units.update_one({"id": uid, "property_id": unit["property_id"]}, {"$set": updates})
+    # Preserve ledger history while keeping CURRENT linked tenant display labels in sync.
+    if new_label and new_label != current_label:
+        await db.tenants.update_many({"user_id": user["id"], "property_id": unit["property_id"], "unit_id": uid, "status": "active"},
+                                     {"$set": {"apartment_number": new_label, "updated_at": now_iso()}})
+    return {"ok": True}
+
 
 @api_router.delete("/units/{uid}")
 async def delete_unit(uid: str, user=Depends(get_current_user)):
@@ -1484,6 +1564,8 @@ async def delete_unit(uid: str, user=Depends(get_current_user)):
     owned = await db.properties.find_one({"id": unit["property_id"], "user_id": user["id"]}, {"_id": 0, "id": 1})
     if not owned:
         raise HTTPException(404, "Unit not found")
+    if await db.tenants.find_one({"user_id": user["id"], "property_id": owned["id"], "unit_id": uid, "status": "active"}, {"_id": 0, "id": 1}):
+        raise HTTPException(409, "Cannot delete an apartment linked to an active tenant")
     await db.units.delete_one({"id": uid, "property_id": owned["id"]})
     return {"ok": True}
 
@@ -1705,15 +1787,40 @@ async def list_tenants(
     page_size: int = 25,
     q: Optional[str] = None,
     property_id: Optional[str] = None,
+    apartment: Optional[str] = None,
     user=Depends(get_current_user),
 ):
     require_roles(user, ["owner"])
     query: Dict[str, Any] = {"user_id": user["id"], "status": {"$nin": ["archived", "access_revoked"]}}
     if property_id and property_id != "all":
         query["property_id"] = property_id
-    if q:
-        rx = {"$regex": re.escape(q), "$options": "i"}
-        query["$or"] = [{"full_name": rx}, {"email": rx}, {"phone": rx}, {"apartment_number": rx}]
+
+    async def find_matching_unit_ids(term: str):
+        unit_query = {"$or": [
+            {"unit_number": {"$regex": re.escape(term), "$options": "i"}},
+            {"unit_name": {"$regex": re.escape(term), "$options": "i"}},
+        ]}
+        if property_id and property_id != "all":
+            unit_query["property_id"] = property_id
+        # Search only units belonging to the signed-in landlord.
+        owned_properties = await db.properties.find({"user_id": user["id"]}, {"_id": 0, "id": 1}).to_list(5000000)
+        unit_query["property_id"] = {"$in": [p["id"] for p in owned_properties if not property_id or property_id == "all" or p["id"] == property_id]}
+        units = await db.units.find(unit_query, {"_id": 0, "id": 1}).to_list(10000)
+        return [u["id"] for u in units]
+
+    if apartment and apartment.strip():
+        term = apartment.strip()[:150]
+        unit_ids = await find_matching_unit_ids(term)
+        query["$or"] = [{"apartment_number": {"$regex": re.escape(term), "$options": "i"}},
+                         {"unit_id": {"$in": unit_ids}}]
+    if q and q.strip():
+        term = q.strip()[:150]
+        rx = {"$regex": re.escape(term), "$options": "i"}
+        unit_ids = await find_matching_unit_ids(term)
+        query["$and"] = [{"$or": [
+            {"full_name": rx}, {"email": rx}, {"phone": rx},
+            {"apartment_number": rx}, {"unit_id": {"$in": unit_ids}},
+        ]}]
 
     async def enrich(items):
         if not items:
