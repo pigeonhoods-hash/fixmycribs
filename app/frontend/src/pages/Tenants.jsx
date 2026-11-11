@@ -99,6 +99,8 @@ export default function Tenants() {
   const filter = searchParams.get("filter") || "";
 
   const [search, setSearch] = useState("");
+  const [propertyFilter, setPropertyFilter] = useState(() => searchParams.get("property") || "all");
+  const [apartmentFilter, setApartmentFilter] = useState(() => searchParams.get("apartment") || "");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
@@ -108,10 +110,13 @@ export default function Tenants() {
 
   const visible = useMemo(() => {
     if (filter === "overdue") {
-      return items.filter((t) => (t.current_rent?.status === "overdue"));
+      return items.filter((t) => (t.current_rent?.status === "overdue") &&
+        (propertyFilter === "all" || t.property_id === propertyFilter) &&
+        (!apartmentFilter.trim() || (t.apartment_number || "").toLowerCase().includes(apartmentFilter.trim().toLowerCase())) &&
+        (!search.trim() || [t.full_name, t.email, t.phone, t.apartment_number].some(value => String(value || "").toLowerCase().includes(search.trim().toLowerCase()))));
     }
     return items;
-  }, [items, filter]);
+  }, [items, filter, propertyFilter, apartmentFilter, search]);
 
   const loadProps = useCallback(async () => {
     const p = await api.get("/properties");
@@ -123,7 +128,10 @@ export default function Tenants() {
     setLoading(true);
     try {
       if (paginated) {
-        const { data } = await api.get(`/tenants?page=${page}&page_size=${PAGE_SIZE}&q=${encodeURIComponent(search)}`);
+        const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE), q: search });
+        if (propertyFilter !== "all") params.set("property_id", propertyFilter);
+        if (apartmentFilter.trim()) params.set("apartment", apartmentFilter.trim());
+        const { data } = await api.get(`/tenants?${params.toString()}`);
         setItems(data.items);
         setTotalPages(data.total_pages);
         setTotal(data.total);
@@ -134,11 +142,11 @@ export default function Tenants() {
         setTotalPages(1);
       }
     } finally { setLoading(false); }
-  }, [paginated, page, search]);
+  }, [paginated, page, search, propertyFilter, apartmentFilter]);
 
   useEffect(() => { loadProps(); }, [loadProps]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { setPage(1); }, [search, filter]);
+  useEffect(() => { setPage(1); }, [search, filter, propertyFilter, apartmentFilter]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -264,15 +272,28 @@ export default function Tenants() {
         </Dialog>
       </div>
 
-      {paginated && (
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[220px] max-w-md">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="relative flex-1 min-w-[220px] max-w-md">
+          <Label className="text-xs text-slate-600">Search tenants</Label>
+          <div className="relative mt-1">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email, phone, apartment…" className="pl-9" data-testid="tenants-search" />
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, email, phone or apartment…" className="pl-9" data-testid="tenants-search" />
           </div>
-          <div className="text-sm text-slate-500" data-testid="tenants-count">{total} tenant{total === 1 ? "" : "s"}</div>
         </div>
-      )}
+        <div className="min-w-[175px]">
+          <Label className="text-xs text-slate-600">Property</Label>
+          <Select value={propertyFilter} onValueChange={setPropertyFilter}>
+            <SelectTrigger data-testid="tenants-property-filter" className="mt-1"><SelectValue placeholder="All properties" /></SelectTrigger>
+            <SelectContent><SelectItem value="all">All properties</SelectItem>{properties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <div className="min-w-[170px] flex-1 max-w-xs">
+          <Label className="text-xs text-slate-600">Apartment / unit</Label>
+          <Input className="mt-1" value={apartmentFilter} onChange={e => setApartmentFilter(e.target.value)} placeholder="e.g. Flat 2B" data-testid="tenants-apartment-filter" />
+        </div>
+        {(search || propertyFilter !== "all" || apartmentFilter) && <Button type="button" variant="outline" onClick={() => { setSearch(""); setPropertyFilter("all"); setApartmentFilter(""); }}>Clear filters</Button>}
+        <div className="text-sm text-slate-500" data-testid="tenants-count">{filter === "overdue" ? visible.length : total} tenant{(filter === "overdue" ? visible.length : total) === 1 ? "" : "s"}</div>
+      </div>
 
       {lastInvite && (
         <Card className="p-4 border border-emerald-200 bg-emerald-50 flex items-start gap-3" data-testid="invite-link-banner">
