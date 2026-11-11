@@ -3,9 +3,10 @@ import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Users, Home } from "lucide-react";
+import { ArrowLeft, Home } from "lucide-react";
 import { formatNaira } from "@/lib/format";
-import StatusBadge from "@/components/StatusBadge";
+import PropertyEditDialog from "@/components/PropertyEditDialog";
+import PropertyTenants from "@/components/PropertyTenants";
 import UnitManager from "@/components/UnitManager";
 
 export default function PropertyDetail() {
@@ -50,11 +51,14 @@ export default function PropertyDetail() {
       <Link to="/dashboard/properties" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
         <ArrowLeft className="w-4 h-4" /> Back to properties
       </Link>
-      <div>
-        <div className="tiny-label text-emerald-700">{prop.type}</div>
-        <h1 className="font-display text-3xl font-bold tracking-tight mt-2">{prop.name}</h1>
-        <p className="text-slate-500 mt-1">{prop.address}{prop.city ? `, ${prop.city}` : ""}{prop.state ? `, ${prop.state}` : ""}</p>
-        <Link to={`/dashboard/imported-records?property=${id}`} className="inline-block mt-2 text-sm text-emerald-700 underline">Receipt and utility history</Link>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="tiny-label text-emerald-700">{prop.type}</div>
+          <h1 className="font-display text-3xl font-bold tracking-tight mt-2">{prop.name}</h1>
+          <p className="text-slate-500 mt-1">{prop.address}{prop.city ? ", " + prop.city : ""}{prop.state ? ", " + prop.state : ""}</p>
+          <Link to={"/dashboard/imported-records?property=" + id} className="inline-block mt-2 text-sm text-emerald-700 underline">Receipt and utility history</Link>
+        </div>
+        <PropertyEditDialog property={prop} onUpdated={async () => { const res = await api.get("/properties/" + id); setProp(res.data); }} />
       </div>
 
       {prop.capacity > 0 && (
@@ -75,39 +79,11 @@ export default function PropertyDetail() {
         </Card>
       )}
 
-      <div className="grid md:grid-cols-2 gap-6">
-        <Card className="p-6 border border-slate-200 bg-white">
-          <div className="flex items-center gap-2">
-            <Users className="w-4 h-4 text-emerald-700" />
-            <div className="tiny-label">Tenants</div>
-          </div>
-          <div className="mt-4">
-            {prop.tenants.length === 0 ? (
-              <div className="text-sm text-slate-500 py-4">No tenants yet in this property.</div>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {prop.tenants.map((t) => (
-                  <li key={t.id} className="py-3 flex items-center justify-between">
-                    <div>
-                      <Link to={`/dashboard/tenants/${t.id}`} className="font-medium hover:text-emerald-700">{t.full_name}</Link>
-                      <div className="text-xs text-slate-500">{t.rent_amount == null ? "Rent awaiting reconciliation" : `${formatNaira(t.rent_amount)} • ${t.rent_frequency || ""}`}</div>
-                    </div>
-                    <StatusBadge status={t.status} />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Card>
-
-        <Card className="p-6 border border-slate-200 bg-white">
-          <div className="flex items-center gap-2">
-            <Home className="w-4 h-4 text-emerald-700" />
-            <div className="tiny-label">Notes</div>
-          </div>
-          <p className="mt-4 text-sm text-slate-600 whitespace-pre-wrap">{prop.notes || "No notes."}</p>
-        </Card>
-      </div>
+      <PropertyTenants property={prop} onUpdated={async () => { const res = await api.get("/properties/" + id); setProp(res.data); }} />
+      <Card className="p-5 border border-slate-200 bg-white">
+        <div className="flex items-center gap-2"><Home className="w-4 h-4 text-emerald-700" /><div className="tiny-label">Property notes</div></div>
+        <p className="mt-3 text-sm text-slate-600 whitespace-pre-wrap">{prop.notes || "No notes."}</p>
+      </Card>
       <UnitManager property={prop} onUpdated={async () => { const result = await api.get(`/properties/${id}`); setProp(result.data); }} />
       <Card className="p-6 border border-slate-200 bg-white space-y-3">
         <h2 className="font-semibold">Import existing occupancy records</h2>
