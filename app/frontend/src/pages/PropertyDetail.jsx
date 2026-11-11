@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft, Users, Home } from "lucide-react";
 import { formatNaira } from "@/lib/format";
 import StatusBadge from "@/components/StatusBadge";
+import UnitManager from "@/components/UnitManager";
 
 export default function PropertyDetail() {
   const { id } = useParams();
@@ -107,15 +108,7 @@ export default function PropertyDetail() {
           <p className="mt-4 text-sm text-slate-600 whitespace-pre-wrap">{prop.notes || "No notes."}</p>
         </Card>
       </div>
-      <Card className="p-6 border border-slate-200 bg-white">
-        <h2 className="font-semibold">Apartments and units</h2>
-        <div className="overflow-x-auto mt-3">
-          <table className="w-full text-sm text-left">
-            <thead><tr><th className="p-2">Unit</th><th className="p-2">Status</th><th className="p-2">Occupant</th></tr></thead>
-            <tbody>{(prop.units || []).map((unit) => <tr key={unit.id} className="border-t"><td className="p-2">{unit.unit_number || unit.unit_name}</td><td className="p-2">{unit.status}</td><td className="p-2">{prop.tenants.find(t => t.unit_id === unit.id && t.status === "active")?.full_name || "—"}</td></tr>)}</tbody>
-          </table>
-        </div>
-      </Card>
+      <UnitManager property={prop} onUpdated={async () => { const result = await api.get(`/properties/${id}`); setProp(result.data); }} />
       <Card className="p-6 border border-slate-200 bg-white space-y-3">
         <h2 className="font-semibold">Import existing occupancy records</h2>
         <p className="text-sm text-slate-600">Adds units and occupants without sending invitations or creating rent charges. Unknown rent and lease dates remain unentered. Existing records are preserved.</p>
